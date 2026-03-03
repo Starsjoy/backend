@@ -801,11 +801,7 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
       `🧾 Order yaratildi: ${order.username} | ${order.recipient} | ${order.amount} so'm | ${order.stars}⭐`
     );
 
-    // 📢 Orders channel ga xabar yuborish
-    const starMessage = `<b>⭐ Yangi Stars buyurtmasi!</b>\n\n<b>Sotuvchi:</b> @${order.username}\n<b>Xaridori:</b> @${order.recipient}\n<b>Stars:</b> ${order.stars}⭐\n<b>Summa:</b> ${order.amount} so'm\n<b>Status:</b> Kutilmoqda`;
-    await notifyOrdersChannel(starMessage);
-
-    // 💰 BALANCE CHECKER GA SIGNAL - balansni yangilash
+    //  BALANCE CHECKER GA SIGNAL - balansni yangilash
     try {
       fetch('http://localhost:5001/api/balance/refresh', {
         method: 'POST',
@@ -1405,11 +1401,7 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
 
     console.log("🎉 ORDER CREATE →", order);
 
-    // 📢 Orders channel ga xabar yuborish
-    const premiumMessage = `<b>💎 Yangi Premium buyurtmasi!</b>\n\n<b>Sotuvchi:</b> @${order.username}\n<b>Xaridori:</b> @${order.recipient}\n<b>Muddat:</b> ${order.muddat_oy} oy\n<b>Summa:</b> ${order.amount} so'm\n<b>Status:</b> Kutilmoqda`;
-    await notifyOrdersChannel(premiumMessage);
-
-    // 💰 BALANCE CHECKER GA SIGNAL - balansni yangilash
+    //  BALANCE CHECKER GA SIGNAL - balansni yangilash
     try {
       fetch('http://localhost:5001/api/balance/refresh', {
         method: 'POST',
@@ -2760,10 +2752,6 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
     }
 
     console.log(`🎁 Gift order yaratildi: #${order.id} | @${order.username} → @${cleanUsername} | ${serverStars}⭐ | ${order.amount} so'm`);
-
-    // 📢 Orders channel ga xabar yuborish
-    const giftMessage = `<b>🎁 Yangi Gift buyurtmasi!</b>\n\n<b>Sotuvchi:</b> @${order.username}\n<b>Xaridori:</b> @${cleanUsername}\n<b>Stars:</b> ${serverStars}⭐\n<b>Summa:</b> ${order.amount} so'm\n<b>Status:</b> Kutilmoqda${anonymous ? '\n<b>Anonim:</b> Ha' : ''}`;
-    await notifyOrdersChannel(giftMessage);
 
     // 20 daqiqadan keyin expired
     setTimeout(async () => {
