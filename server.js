@@ -721,11 +721,11 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
       });
     }
 
-    // 🛡️ SECURITY: Stars miqdorini tekshirish (integer, 50-100000)
+    // 🛡️ SECURITY: Stars miqdorini tekshirish (integer, 50-10000)
     const starsNum = parseInt(stars);
-    if (!Number.isInteger(starsNum) || starsNum < 50 || starsNum > 100000) {
+    if (!Number.isInteger(starsNum) || starsNum < 50 || starsNum > 10000) {
       return res.status(400).json({
-        error: "Stars miqdori 50 dan 100000 gacha bo'lishi kerak"
+        error: "Stars miqdori 50 dan 10000 gacha bo'lishi kerak"
       });
     }
 
