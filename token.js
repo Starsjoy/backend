@@ -12,6 +12,9 @@ const APP_URL = process.env.WEBAPP_URL;
 // Majburiy obuna kanali
 const REQUIRED_CHANNEL = '@starsjoy';
 
+// Buyurtmalar kanali
+const ORDERS_CHANNEL = -1003752422150;
+
 
 // ===============================
 // Kanalga obuna tekshirish
@@ -51,10 +54,6 @@ function getStartText(name) {
   return `
 🌟 *Starsjoy botiga xush kelibsiz, ${name}!*
 
-Bu yerda siz quyidagi xizmatlardan foydalanishingiz mumkin:
-- ⭐ *Stars* sotib olish
-- 💎 *Premium* obuna sotib olish
-Quyidagi tugmalardan foydalanib, kerakli bo‘limga o‘ting:
 `;
 }
 
@@ -123,18 +122,7 @@ bot.start(async (ctx) => {
         [
           Markup.button.webApp("⭐ Stars / 💎 Premium olish", "https://vitahealth.uz/")
         ],
-        [
-          Markup.button.url(
-            "💎 1 oylik premium",
-            "https://t.me/starsjoy_bot?text=Assalomu%20aleykum%2C%201%20oylik%20premium%20narxi%2044000%20so%27m%20ekan%20akkauntimga%20kirib%20olib%20berasizmi%3F"
-          )
-        ],
-        [
-          Markup.button.url(
-            "💎 1 yillik premium",
-            "https://t.me/starsjoy_bot?text=Assalomu%20aleykum%2C%201%20yillik%20premium%20narxi%20299000%20so%27m%20ekan%20akkauntimga%20kirib%20olib%20berasizmi%3F"
-          )
-        ]
+        
     ])
   );
 });
@@ -168,18 +156,7 @@ bot.action('check_subscription', async (ctx) => {
         [
           Markup.button.webApp("⭐ Stars / 💎 Premium olish", "https://vitahealth.uz/")
         ],
-        [
-          Markup.button.url(
-            "💎 1 oylik premium",
-            "https://t.me/starsjoy_bot?text=Assalomu%20aleykum%2C%201%20oylik%20premium%20narxi%2044000%20so%27m%20ekan%20akkauntimga%20kirib%20olib%20berasizmi%3F"
-          )
-        ],
-        [
-          Markup.button.url(
-            "💎 1 yillik premium",
-            "https://t.me/starsjoy_bot?text=Assalomu%20aleykum%2C%201%20yillik%20premium%20narxi%20299000%20so%27m%20ekan%20akkauntimga%20kirib%20olib%20berasizmi%3F"
-          )
-        ]
+        
     ])
   );
 

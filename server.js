@@ -6,6 +6,7 @@ import fetch from "node-fetch";
 import crypto from "crypto";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import { Telegraf } from 'telegraf';
 dotenv.config();
 const { Pool } = pkg;
 
@@ -240,6 +241,34 @@ if (!STARS_PRICE_PER_UNIT || STARS_PRICE_PER_UNIT <= 0) {
   process.exit(1);
 }
 console.log(`💰 Stars narxi: 1⭐ = ${STARS_PRICE_PER_UNIT} UZS`);
+
+// ======================
+// 🤖 TELEGRAM BOT - Buyurtmalar kanaliga xabar yuborish
+// ======================
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const ORDERS_CHANNEL = -1003752422150;
+let bot = null;
+
+if (BOT_TOKEN) {
+  bot = new Telegraf(BOT_TOKEN);
+  console.log('✅ Telegram bot initialized for order notifications');
+} else {
+  console.warn('⚠️ BOT_TOKEN .env da topilmadi - orders channel xabarlar yuborilmaydi');
+}
+
+// Buyurtmalar kanali xabari yuborish funksiyasi
+async function notifyOrdersChannel(message) {
+  if (!bot) {
+    console.log('❌ Bot ishga tushmagan, xabar yuborilmadi');
+    return;
+  }
+  try {
+    await bot.telegram.sendMessage(ORDERS_CHANNEL, message, { parse_mode: 'HTML' });
+    console.log('✅ Orders channel ga xabar yuborildi');
+  } catch (err) {
+    console.error('❌ Orders channel xabari yuborishda xato:', err.message);
+  }
+}
 
 // ======================
 // 🔧 MAINTENANCE MODE (texnik ishlar rejimi)
@@ -771,6 +800,10 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
     console.log(
       `🧾 Order yaratildi: ${order.username} | ${order.recipient} | ${order.amount} so'm | ${order.stars}⭐`
     );
+
+    // 📢 Orders channel ga xabar yuborish
+    const starMessage = `<b>⭐ Yangi Stars buyurtmasi!</b>\n\n<b>Sotuvchi:</b> @${order.username}\n<b>Xaridori:</b> @${order.recipient}\n<b>Stars:</b> ${order.stars}⭐\n<b>Summa:</b> ${order.amount} so'm\n<b>Status:</b> Kutilmoqda`;
+    await notifyOrdersChannel(starMessage);
 
     // 💰 BALANCE CHECKER GA SIGNAL - balansni yangilash
     try {
@@ -1372,6 +1405,10 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
 
     console.log("🎉 ORDER CREATE →", order);
 
+    // 📢 Orders channel ga xabar yuborish
+    const premiumMessage = `<b>💎 Yangi Premium buyurtmasi!</b>\n\n<b>Sotuvchi:</b> @${order.username}\n<b>Xaridori:</b> @${order.recipient}\n<b>Muddat:</b> ${order.muddat_oy} oy\n<b>Summa:</b> ${order.amount} so'm\n<b>Status:</b> Kutilmoqda`;
+    await notifyOrdersChannel(premiumMessage);
+
     // 💰 BALANCE CHECKER GA SIGNAL - balansni yangilash
     try {
       fetch('http://localhost:5001/api/balance/refresh', {
@@ -1824,23 +1861,35 @@ app.post("/api/interview/callback", (req, res) => {
 // ===============================
 app.get("/api/stats/leaderboard", telegramAuth, async (req, res) => {
   try {
-    const { username } = req.query;
+    const { username, period } = req.query;
     
     const clean = username && username.startsWith("@")
       ? username.slice(1)
       : username;
+
+    // Period filter: daily, weekly, monthly, all (default)
+    let dateFilter = "";
+    if (period === "daily") {
+      dateFilter = "AND created_at >= NOW() - INTERVAL '1 day'";
+    } else if (period === "weekly") {
+      dateFilter = "AND created_at >= NOW() - INTERVAL '7 days'";
+    } else if (period === "monthly") {
+      dateFilter = "AND created_at >= NOW() - INTERVAL '30 days'";
+    }
 
     const query = `
       WITH combined AS (
         SELECT username, amount
         FROM transactions
         WHERE status = 'stars_sent'
+        ${dateFilter}
 
         UNION ALL
 
         SELECT username, amount
         FROM transactions_premium
         WHERE status = 'premium_sent'
+        ${dateFilter}
       ),
       summed AS (
         SELECT
@@ -2032,7 +2081,7 @@ app.get("/api/referral/link/:username", telegramAuth, async (req, res) => {
     // const referralLink = `${APP_URL}?ref=${userData.referral_code}`;
     
     // Telegram Mini App Link
-    const referralLink = `https://t.me/starsjoybot/starsjoy?startapp=${userData.referral_code}`;
+    const referralLink = `https://t.me/StarsjoyBot/starsjoy?startapp=${userData.referral_code}`;
 
     res.json({
       referral_code: userData.referral_code,
@@ -2711,6 +2760,10 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
     }
 
     console.log(`🎁 Gift order yaratildi: #${order.id} | @${order.username} → @${cleanUsername} | ${serverStars}⭐ | ${order.amount} so'm`);
+
+    // 📢 Orders channel ga xabar yuborish
+    const giftMessage = `<b>🎁 Yangi Gift buyurtmasi!</b>\n\n<b>Sotuvchi:</b> @${order.username}\n<b>Xaridori:</b> @${cleanUsername}\n<b>Stars:</b> ${serverStars}⭐\n<b>Summa:</b> ${order.amount} so'm\n<b>Status:</b> Kutilmoqda${anonymous ? '\n<b>Anonim:</b> Ha' : ''}`;
+    await notifyOrdersChannel(giftMessage);
 
     // 20 daqiqadan keyin expired
     setTimeout(async () => {
