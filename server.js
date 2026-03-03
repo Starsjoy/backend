@@ -2556,7 +2556,7 @@ async function sendChannelNotification(orderId, type) {
 
     if (!order) return;
 
-    const channelId = "@starsjoy_orders";
+    const channelId = -1003752422150; // Orders channel ID
     const botToken = process.env.BOT_TOKEN;
     
     if (!botToken) {
