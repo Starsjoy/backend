@@ -442,6 +442,24 @@ const pool = new Pool({
 })();
 
 // ======================
+// 🏷️ DISCOUNT PACKAGES TABLE
+// ======================
+(async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS discount_packages (
+      id SERIAL PRIMARY KEY,
+      stars INTEGER NOT NULL,
+      discount_percent INTEGER NOT NULL,
+      discounted_price INTEGER NOT NULL,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'Asia/Tashkent'),
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'Asia/Tashkent')
+    );
+  `);
+  console.log("✅ Table 'discount_packages' ready");
+})();
+
+// ======================
 // 📊 REFERRAL LEADERBOARD (referrer_username orqali sanash)
 // ======================
 app.get("/api/referral/leaderboard", telegramAuth, async (req, res) => {
@@ -712,7 +730,7 @@ app.post("/api/search", searchLimiter, telegramAuth, async (req, res) => {
 // ======================
 app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
   try {
-    const { username, recipient, stars } = req.body;
+    const { username, recipient, stars, amount: requestedAmount } = req.body;
 
     // ⚠️ Endi recipient majburiy!
     if (!username || !recipient || !stars) {
@@ -729,8 +747,35 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
       });
     }
 
-    // 🛡️ SECURITY: Amount ni SERVER hisoblaydi — frontendga ISHONMAYMIZ!
-    const amount = starsNum * STARS_PRICE_PER_UNIT;
+    // 🛡️ SECURITY: Chegirma paketi yoki oddiy narxni tekshirish
+    let amount;
+    
+    if (requestedAmount) {
+      // Chegirma paketi orqali buyurtma - narxni tekshiramiz
+      const discountCheck = await pool.query(
+        "SELECT * FROM discount_packages WHERE stars = $1 AND discounted_price = $2 AND is_active = true",
+        [starsNum, requestedAmount]
+      );
+      
+      if (discountCheck.rows.length > 0) {
+        // Chegirma paketi topildi - tasdiqlanadi
+        amount = requestedAmount;
+        console.log(`🏷️ Chegirma paketi: ${starsNum} stars = ${amount} so'm`);
+      } else {
+        // Chegirma paketi topilmadi - oddiy narx bilan tekshiramiz
+        const normalPrice = starsNum * STARS_PRICE_PER_UNIT;
+        if (requestedAmount === normalPrice) {
+          amount = normalPrice;
+        } else {
+          return res.status(400).json({
+            error: "Noto'g'ri narx. Iltimos, qaytadan urinib ko'ring."
+          });
+        }
+      }
+    } else {
+      // Oddiy buyurtma - SERVER hisoblaydi
+      amount = starsNum * STARS_PRICE_PER_UNIT;
+    }
 
     const cleanUsername = username.startsWith("@")
       ? username.slice(1)
@@ -1073,8 +1118,8 @@ async function processReferralBonus(username, stars, transactionId) {
       return;
     }
 
-    // Bonus calculation: har 50 star uchun 5 star
-    const bonusStars = Math.floor(stars / 50) * 5;
+    // Bonus calculation: har 50 star uchun 2 star
+    const bonusStars = Math.floor(stars / 50) * 2;
 
     if (bonusStars <= 0) {
       return;
@@ -1124,13 +1169,13 @@ async function processReferralBonus(username, stars, transactionId) {
         if (user.rows[0] && user.rows[0].total_referrals >= 10) {
           // Give bonus and mark as given
           await pool.query(
-            `UPDATE users SET referral_balance = referral_balance + 25, influencer_bonus = true WHERE username = $1`, [username]
+            `UPDATE users SET referral_balance = referral_balance + 15, influencer_bonus = true WHERE username = $1`, [username]
           );
           await pool.query(
             `INSERT INTO referral_earnings (referrer_username, referee_username, earned_stars, triggered_by_transaction_id)
-             VALUES ($1, $1, 25, NULL)`, [username]
+             VALUES ($1, $1, 15, NULL)`, [username]
           );
-          console.log(`🎉 Influencer bonus: ${username} ga 25⭐ berildi`);
+          console.log(`🎉 Influencer bonus: ${username} ga 15⭐ berildi`);
         }
       } catch (err) {
         console.error("❌ Influencer bonus error:", err.message);
@@ -1161,7 +1206,7 @@ async function processPremiumReferralBonus(username, transactionId) {
 
     if (!referrer) return;
 
-    const bonusStars = 25;
+    const bonusStars = 15;
 
     // Referrer balance-ga qo'shish
     await pool.query(
@@ -2447,6 +2492,138 @@ app.post("/api/admin/users/:username/som-balance", adminAuth, async (req, res) =
   } catch (err) {
     console.error("❌ Admin som balance adjust ERROR:", err);
     res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// ======================
+// 🏷️ DISCOUNT PACKAGES API
+// ======================
+
+// Get all active discount packages (public)
+app.get("/api/discount-packages", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM discount_packages WHERE is_active = true ORDER BY stars ASC"
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("❌ GET discount-packages ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// Get all discount packages (admin)
+app.get("/api/admin/discount-packages", adminAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM discount_packages ORDER BY stars ASC"
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("❌ GET admin discount-packages ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// Create discount package (admin)
+app.post("/api/admin/discount-packages", adminAuth, async (req, res) => {
+  try {
+    const { stars, discount_percent, discounted_price } = req.body;
+
+    if (!stars || !discount_percent || !discounted_price) {
+      return res.status(400).json({ error: "stars, discount_percent, discounted_price kerak" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO discount_packages (stars, discount_percent, discounted_price) 
+       VALUES ($1, $2, $3) 
+       RETURNING *`,
+      [stars, discount_percent, discounted_price]
+    );
+
+    console.log(`🏷️ Admin: Yangi chegirma paketi qo'shildi - ${stars} stars, ${discount_percent}%, ${discounted_price} so'm`);
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("❌ POST discount-packages ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// Update discount package (admin)
+app.patch("/api/admin/discount-packages/:id", adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { stars, discount_percent, discounted_price, is_active } = req.body;
+
+    const result = await pool.query(
+      `UPDATE discount_packages 
+       SET stars = COALESCE($1, stars),
+           discount_percent = COALESCE($2, discount_percent),
+           discounted_price = COALESCE($3, discounted_price),
+           is_active = COALESCE($4, is_active),
+           updated_at = NOW() AT TIME ZONE 'Asia/Tashkent'
+       WHERE id = $5
+       RETURNING *`,
+      [stars, discount_percent, discounted_price, is_active, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Paket topilmadi" });
+    }
+
+    console.log(`🏷️ Admin: Chegirma paketi yangilandi - ID: ${id}`);
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("❌ PATCH discount-packages ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// Delete discount package (admin)
+app.delete("/api/admin/discount-packages/:id", adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      "DELETE FROM discount_packages WHERE id = $1 RETURNING *",
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Paket topilmadi" });
+    }
+
+    console.log(`🏷️ Admin: Chegirma paketi o'chirildi - ID: ${id}`);
+    res.json({ success: true, deleted: result.rows[0] });
+  } catch (err) {
+    console.error("❌ DELETE discount-packages ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// Validate discount package price (used during order creation)
+app.post("/api/validate-discount-price", async (req, res) => {
+  try {
+    const { stars, amount } = req.body;
+
+    if (!stars || !amount) {
+      return res.status(400).json({ valid: false, error: "stars va amount kerak" });
+    }
+
+    // Check if this is a valid discount package
+    const result = await pool.query(
+      "SELECT * FROM discount_packages WHERE stars = $1 AND discounted_price = $2 AND is_active = true",
+      [stars, amount]
+    );
+
+    if (result.rows.length > 0) {
+      res.json({ valid: true, package: result.rows[0] });
+    } else {
+      res.json({ valid: false, error: "Noto'g'ri chegirma paketi" });
+    }
+  } catch (err) {
+    console.error("❌ Validate discount price ERROR:", err);
+    res.status(500).json({ valid: false, error: "Server xato" });
   }
 });
 
