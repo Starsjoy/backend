@@ -3176,6 +3176,58 @@ app.post("/api/admin/gift/send/:id", adminAuth, async (req, res) => {
 });
 
 // ======================
+// 📊 ADMIN — Wallet Info (TON Balance & Stars Price)
+// ======================
+const ROBYNHOOD_API_KEY = process.env.ROB_API_KEY;
+
+app.get("/api/admin/wallet-info", adminAuth, async (req, res) => {
+  try {
+    // Fetch TON balance
+    const balanceRes = await fetch("https://robynhood.parssms.info/api/balance", {
+      headers: {
+        "accept": "application/json",
+        "X-API-Key": ROBYNHOOD_API_KEY
+      }
+    });
+    const balanceData = await balanceRes.json();
+
+    // Fetch stars price (50 stars as reference)
+    const priceRes = await fetch("https://robynhood.parssms.info/api/prices?product_type=stars&quantity=50", {
+      headers: {
+        "accept": "application/json",
+        "X-API-Key": ROBYNHOOD_API_KEY
+      }
+    });
+    const priceData = await priceRes.json();
+
+    // Calculate available stars
+    const mainnetBalance = parseFloat(balanceData.mainnet_balance) || 0;
+    const testnetBalance = parseFloat(balanceData.testnet_balance) || 0;
+    const priceFor50Stars = parseFloat(priceData.price) || 0;
+    const pricePerStar = priceFor50Stars / 50;
+    const availableStars = pricePerStar > 0 ? Math.floor(mainnetBalance / pricePerStar) : 0;
+
+    res.json({
+      success: true,
+      wallet: {
+        mainnet_balance: mainnetBalance,
+        testnet_balance: testnetBalance
+      },
+      stars_price: {
+        price_for_50: priceFor50Stars,
+        price_per_star: pricePerStar,
+        currency: priceData.currency || "TON"
+      },
+      available_stars: availableStars
+    });
+
+  } catch (err) {
+    console.error("❌ /api/admin/wallet-info ERROR:", err);
+    res.status(500).json({ error: "Failed to fetch wallet info" });
+  }
+});
+
+// ======================
 // run server
 // ======================
 const PORT = process.env.PORT;
