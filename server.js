@@ -262,11 +262,9 @@ Barchasi bir joyda — <b>StarsJoy</b>!`;
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '📢 Kanalga obuna bo\'lish', url: `https://t.me/${SUBSCRIPTION_CHANNEL.replace('@', '')}` }
+            { text: '�Start', url: 'https://t.me/StarsjoyBot?start=welcome' }
           ],
-          [
-            { text: '🚀 Ilovani ochish', web_app: { url: WEBAPP_URL } }
-          ]
+          
         ]
       }
     });
@@ -1068,8 +1066,8 @@ async function processReferralBonus(username, stars, transactionId) {
       return;
     }
     const referrerUsername = referrerResult.rows[0].username;
-    // Bonus calculation: har 50 star uchun 2 star
-    const bonusStars = Math.floor(stars / 50) * 2;
+    // Bonus calculation: har 50 star uchun 5 star
+    const bonusStars = Math.floor(stars / 50) * 5;
     if (bonusStars <= 0) {
       return;
     }
@@ -1945,10 +1943,45 @@ app.post("/api/user/subscribe-check", authLimiter, telegramAuth, async (req, res
       [tgUserId]
     );
     
-    // Agar bu user referrer orqali kelgan bo'lsa - referral aktivlashdi
+    // Agar bu user referrer orqali kelgan bo'lsa - referral aktivlashdi va +2 bonus
     const referrerUserId = user.rows[0].referrer_user_id;
     if (referrerUserId) {
       console.log(`🎉 REFERRAL AKTIVLASHDI: User ${tgUserId} kanalga obuna bo'ldi. Referrer: ${referrerUserId}`);
+      
+      // +2 stars bonus referrer ga
+      try {
+        // Referrer ma'lumotlarini olish
+        const referrerResult = await pool.query(
+          "SELECT username FROM users WHERE user_id = $1",
+          [referrerUserId]
+        );
+        if (referrerResult.rows.length > 0) {
+          const referrerUsername = referrerResult.rows[0].username;
+          const userName = user.rows[0].username || tgUserId;
+          const bonusStars = 2;
+          
+          // Referrer balance-ga qo'shish
+          await pool.query(
+            `UPDATE users 
+             SET referral_balance = referral_balance + $1,
+                 total_earnings = total_earnings + $1,
+                 total_referrals = total_referrals + 1
+             WHERE user_id = $2`,
+            [bonusStars, referrerUserId]
+          );
+          
+          // Referral earnings log-ga qo'shish
+          await pool.query(
+            `INSERT INTO referral_earnings (referrer_username, referee_username, earned_stars, triggered_by_transaction_id)
+             VALUES ($1, $2, $3, $4)`,
+            [referrerUsername, userName, bonusStars, null]
+          );
+          
+          console.log(`🎁 SUBSCRIBE BONUS: ${referrerUsername} (${referrerUserId}) ga ${bonusStars}⭐ bonus qo'shildi (${userName} kanalga obuna bo'ldi)`);
+        }
+      } catch (bonusErr) {
+        console.error("❌ Subscribe bonus error:", bonusErr.message);
+      }
     } else {
       console.log(`📢 User ${tgUserId} kanalga obuna bo'ldi`);
     }
@@ -3417,8 +3450,8 @@ async function processReferralBonusByUserId(userId, stars, orderId) {
     
     const referrerUsername = referrerResult.rows[0].username;
     
-    // Bonus hisoblash: har 50 star uchun 2 star
-    const bonusStars = Math.floor(stars / 50) * 2;
+    // Bonus hisoblash: har 50 star uchun 5 star
+    const bonusStars = Math.floor(stars / 50) * 5;
     if (bonusStars <= 0) return;
     
     // Referrer balance yangilash
