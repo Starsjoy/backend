@@ -549,14 +549,37 @@ app.get("/api/status", (req, res) => {
   res.json({ message: "Sayt aktiv holatda ✅" });
 });
 // ======================
-// 6️⃣ Admin panel - barcha transactionlarni olish
+// 6️⃣ Admin panel - barcha transactionlarni olish (faqat stars)
 // ======================
 app.get("/api/transactions/all", adminAuth, async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM orders ORDER BY id DESC");
-    res.json(result.rows);
+    const result = await pool.query(`
+      SELECT 
+        id,
+        order_id,
+        recipient_username AS username,
+        recipient,
+        type_amount AS stars,
+        summ AS amount,
+        status,
+        payment_status,
+        transaction_id,
+        created_at,
+        order_type
+      FROM orders 
+      WHERE order_type = 'stars'
+      ORDER BY id DESC
+    `);
+    
+    // Status mapping: completed → stars_sent
+    const mapped = result.rows.map(row => ({
+      ...row,
+      status: row.status === 'completed' ? 'stars_sent' : row.status
+    }));
+    
+    res.json(mapped);
   } catch (err) {
-    console.error(err);
+    console.error("❌ /api/transactions/all ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -564,15 +587,40 @@ app.get("/api/transactions/all", adminAuth, async (req, res) => {
 // 2️⃣ Status bo‘yicha filter
 // ======================
 app.get("/api/transactions/status/:status", adminAuth, async (req, res) => {
-  const { status } = req.params;
+  let { status } = req.params;
+  
+  // Legacy status mapping: frontend "stars_sent" yuborsa, DB da "completed" qidiramiz
+  const dbStatus = status === 'stars_sent' ? 'completed' : status;
+  
   try {
     const result = await pool.query(
-      "SELECT * FROM orders WHERE status=$1 ORDER BY id DESC",
-      [status]
+      `SELECT 
+        id,
+        order_id,
+        recipient_username AS username,
+        recipient,
+        type_amount AS stars,
+        summ AS amount,
+        status,
+        payment_status,
+        transaction_id,
+        created_at,
+        order_type
+      FROM orders 
+      WHERE status = $1 AND order_type = 'stars'
+      ORDER BY id DESC`,
+      [dbStatus]
     );
-    res.json(result.rows);
+    
+    // Status mapping: completed → stars_sent
+    const mapped = result.rows.map(row => ({
+      ...row,
+      status: row.status === 'completed' ? 'stars_sent' : row.status
+    }));
+    
+    res.json(mapped);
   } catch (err) {
-    console.error(err);
+    console.error("❌ /api/transactions/status ERROR:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
