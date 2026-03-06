@@ -358,6 +358,46 @@ app.post('/api/gift/send-userbot', async (req, res) => {
     }
 });
 
+// ======================
+// ⭐ STARS BALANCE — GramJS orqali user stars balansini olish
+// ======================
+app.get('/api/userbot/stars-balance', async (req, res) => {
+    try {
+        // Internal auth tekshiruvi
+        const key = req.headers['x-internal-key'];
+        if (key !== INTERNAL_SECRET) {
+            return res.status(403).json({ success: false, error: 'Ruxsat berilmagan' });
+        }
+
+        if (!isClientReady || !client?.connected) {
+            return res.status(503).json({ success: false, error: 'Userbot client tayyor emas' });
+        }
+
+        console.log('⭐ Stars balance so\'ralmoqda...');
+
+        // payments.getStarsStatus API
+        const result = await client.invoke(
+            new Api.payments.GetStarsStatus({
+                peer: new Api.InputPeerSelf()
+            })
+        );
+
+        const starsBalance = Number(result.balance) || 0;
+
+        console.log(`⭐ Stars balance: ${starsBalance}`);
+
+        res.json({
+            success: true,
+            stars_balance: starsBalance,
+            subscriptions: result.subscriptions || []
+        });
+
+    } catch (err) {
+        console.error('❌ Stars balance olishda xato:', err);
+        res.status(500).json({ success: false, error: err?.message || 'Noma\'lum xato' });
+    }
+});
+
 // ================== STANDALONE RUN ==================
 if (process.argv[1]?.includes('balanceChecker')) {
     console.log('🚀 SMS Listener mustaqil ishga tushmoqda...');

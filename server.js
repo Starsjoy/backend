@@ -923,10 +923,10 @@ app.post("/api/payments/match", internalAuth, async (req, res) => {
           console.error("❌ Yulduz yuborishda xato:", err.message);
         });
     } else if (order.order_type === 'premium') {
-      deliverPremiumOrder(order.id)
+      deliverPremiumOrder(order)
         .catch(err => console.error("❌ Premium delivery error:", err.message));
     } else if (order.order_type === 'gift') {
-      deliverGiftOrder(order.id)
+      deliverGiftOrder(order)
         .catch(err => console.error("❌ Gift delivery error:", err.message));
     }
     // Backward compatible response
@@ -1404,7 +1404,7 @@ app.post("/api/premium/match", internalAuth, async (req, res) => {
     console.log("🎯 Topildi va processing:", order);
     
     // Premium yuborish
-    deliverPremiumOrder(order.id)
+    deliverPremiumOrder(order)
       .then(result => {
         console.log("📦 deliverPremiumOrder javobi:", result);
         if (result.status === "completed") {
@@ -2731,7 +2731,7 @@ app.post("/api/gift/match", internalAuth, async (req, res) => {
     console.log(`🎉 Gift to'lov tasdiqlandi: #${order.id} | ${order.recipient_username} → @${order.recipient} | ${order.summ} so'm`);
     
     // Gift yuborish
-    deliverGiftOrder(order.id)
+    deliverGiftOrder(order)
       .then(() => {
         console.log(`🎁 Gift yuborildi: #${order.id} → @${order.recipient}`);
       })
@@ -2928,6 +2928,51 @@ app.get("/api/admin/wallet-info", adminAuth, async (req, res) => {
   } catch (err) {
     console.error("❌ /api/admin/wallet-info ERROR:", err);
     res.status(500).json({ error: "Failed to fetch wallet info" });
+  }
+});
+
+// ======================
+// ⭐ ADMIN — User Stars Balance (Userbot GramJS orqali)
+// ======================
+const BALANCE_CHECKER_URL = process.env.BALANCE_CHECKER_URL || 'http://localhost:5002';
+
+app.get("/api/admin/bot-stars-balance", adminAuth, async (req, res) => {
+  try {
+    // Userbot orqali stars balance olish
+    const response = await fetch(`${BALANCE_CHECKER_URL}/api/userbot/stars-balance`, {
+      method: 'GET',
+      headers: {
+        'X-Internal-Key': INTERNAL_SECRET
+      }
+    });
+    
+    const data = await response.json();
+    
+    if (!data.success) {
+      console.log("⚠️ Userbot stars balance xato:", data.error);
+      return res.json({
+        success: true,
+        bot_stars_balance: 0,
+        transactions_available: false,
+        message: data.error || "Stars balance olishda xato"
+      });
+    }
+
+    // Natijani qaytarish
+    res.json({
+      success: true,
+      bot_stars_balance: data.stars_balance || 0,
+      transactions_available: true
+    });
+
+  } catch (err) {
+    console.error("❌ /api/admin/bot-stars-balance ERROR:", err);
+    res.json({
+      success: true,
+      bot_stars_balance: 0,
+      transactions_available: false,
+      message: "Userbot ulanmagan"
+    });
   }
 });
 // ==============================================
