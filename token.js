@@ -1,7 +1,14 @@
 import 'dotenv/config';
 import { Telegraf, Markup } from 'telegraf';
+import pg from 'pg';
+const { Pool } = pg;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
+
+// PostgreSQL pool
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
 
 // ADMIN IDS → array
 const ADMIN_IDS = process.env.ADMIN_IDS.split(',').map(id => Number(id));
@@ -14,6 +21,10 @@ const REQUIRED_CHANNEL = '@starsjoy';
 
 // Buyurtmalar kanali
 const ORDERS_CHANNEL = -1003752422150;
+
+// Broadcast state - admin xabar yuborish uchun
+const broadcastState = new Map();
+// { adminId: { waiting: true, type: 'text' | 'photo' } }
 
 
 // ===============================
@@ -117,6 +128,9 @@ bot.start(async (ctx) => {
       Markup.inlineKeyboard([
         [
           Markup.button.webApp("Admin panel", `${APP_URL}/starsadmin`)
+        ],
+        [
+          Markup.button.callback("Xabar yuborish", "broadcast_start")
         ]
       ])
     );
@@ -158,7 +172,69 @@ bot.action('check_subscription', async (ctx) => {
     return;
   }
 
-  // Obuna bo'lgan — eski xabarni o'chirib, asosiy menyu
+  // Obuna bo'lgan — database-ga yozish va referral bonusni berish
+  try {
+    // User'ni topish va subscribe_user = true qilish
+    const userCheck = await pool.query(
+      'SELECT user_id, username, referrer_user_id, subscribe_user FROM users WHERE user_id = $1',
+      [String(userId)]
+    );
+
+    if (userCheck.rows.length > 0) {
+      const user = userCheck.rows[0];
+      
+      // Agar hali subscribe bo'lmagan bo'lsa
+      if (!user.subscribe_user) {
+        // subscribe_user = true qilish
+        await pool.query(
+          'UPDATE users SET subscribe_user = true WHERE user_id = $1',
+          [String(userId)]
+        );
+        console.log(`✅ User ${userId} subscribe_user = true qilindi`);
+
+        // Agar referrer orqali kelgan bo'lsa - +2 bonus berish
+        if (user.referrer_user_id) {
+          try {
+            const referrerResult = await pool.query(
+              'SELECT username FROM users WHERE user_id = $1',
+              [user.referrer_user_id]
+            );
+
+            if (referrerResult.rows.length > 0) {
+              const referrerUsername = referrerResult.rows[0].username;
+              const userName = user.username || String(userId);
+              const bonusStars = 2;
+
+              // Referrer balance-ga qo'shish
+              await pool.query(
+                `UPDATE users 
+                 SET referral_balance = referral_balance + $1,
+                     total_earnings = total_earnings + $1,
+                     total_referrals = total_referrals + 1
+                 WHERE user_id = $2`,
+                [bonusStars, user.referrer_user_id]
+              );
+
+              // Referral earnings log
+              await pool.query(
+                `INSERT INTO referral_earnings (referrer_username, referee_username, earned_stars, triggered_by_transaction_id)
+                 VALUES ($1, $2, $3, $4)`,
+                [referrerUsername, userName, bonusStars, null]
+              );
+
+              console.log(`🎁 SUBSCRIBE BONUS: ${referrerUsername} ga ${bonusStars}⭐ bonus qo'shildi (${userName} kanalga obuna bo'ldi)`);
+            }
+          } catch (bonusErr) {
+            console.error('❌ Subscribe bonus error:', bonusErr.message);
+          }
+        }
+      }
+    }
+  } catch (dbErr) {
+    console.error('❌ Database update error:', dbErr.message);
+  }
+
+  // Eski xabarni o'chirish
   try {
     await ctx.deleteMessage();
   } catch (e) {}
@@ -177,6 +253,253 @@ bot.action('check_subscription', async (ctx) => {
   try {
     await ctx.answerCbQuery('✅ Obuna tasdiqlandi!');
   } catch (e) {}
+});
+
+
+// ===============================
+// 📢 BROADCAST TIZIMI
+// ===============================
+
+// Broadcast boshlash tugmasi
+bot.action('broadcast_start', async (ctx) => {
+  const userId = ctx.from.id;
+  
+  if (!ADMIN_IDS.includes(userId)) {
+    return await ctx.answerCbQuery('❌ Ruxsat yo\'q', { show_alert: true });
+  }
+
+  await ctx.answerCbQuery();
+  
+  await ctx.reply(
+    `📢 *Broadcast xabar yuborish*
+
+Qanday turdagi xabar yubormoqchisiz?`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '📝 Faqat matn', callback_data: 'broadcast_text' },
+            { text: '🖼 Rasm + matn', callback_data: 'broadcast_photo' }
+          ],
+          [
+            { text: '❌ Bekor qilish', callback_data: 'broadcast_cancel' }
+          ]
+        ]
+      }
+    }
+  );
+});
+
+// Faqat matn yuborish
+bot.action('broadcast_text', async (ctx) => {
+  const userId = ctx.from.id;
+  
+  if (!ADMIN_IDS.includes(userId)) return;
+
+  await ctx.answerCbQuery();
+  broadcastState.set(userId, { waiting: true, type: 'text' });
+  
+  await ctx.editMessageText(
+    `📝 *Matn xabarni yuboring*
+
+Barcha foydalanuvchilarga yuboriladigan matnni yozing:
+
+_HTML formatda yozishingiz mumkin: <b>qalin</b>, <i>kursiv</i>, <a href="link">havola</a>_`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Rasm + matn yuborish
+bot.action('broadcast_photo', async (ctx) => {
+  const userId = ctx.from.id;
+  
+  if (!ADMIN_IDS.includes(userId)) return;
+
+  await ctx.answerCbQuery();
+  broadcastState.set(userId, { waiting: true, type: 'photo' });
+  
+  await ctx.editMessageText(
+    `🖼 *Rasm va matn yuboring*
+
+Rasm yuboring va caption (izoh) qo'shing.
+
+_Caption HTML formatda bo'lishi mumkin_`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Bekor qilish
+bot.action('broadcast_cancel', async (ctx) => {
+  const userId = ctx.from.id;
+  
+  broadcastState.delete(userId);
+  await ctx.answerCbQuery('❌ Bekor qilindi');
+  await ctx.deleteMessage();
+});
+
+// Broadcast tasdiqlash
+bot.action(/^broadcast_confirm_(.+)$/, async (ctx) => {
+  const userId = ctx.from.id;
+  
+  if (!ADMIN_IDS.includes(userId)) return;
+
+  const data = ctx.match[1];
+  const state = broadcastState.get(userId);
+  
+  if (!state || !state.message) {
+    return await ctx.answerCbQuery('❌ Xabar topilmadi', { show_alert: true });
+  }
+
+  await ctx.answerCbQuery('⏳ Yuborilmoqda...');
+  await ctx.editMessageText('⏳ *Broadcast boshlanmoqda...*', { parse_mode: 'Markdown' });
+
+  // Barcha user_id larni olish
+  try {
+    const result = await pool.query('SELECT user_id FROM users WHERE user_id IS NOT NULL');
+    const userIds = result.rows.map(r => r.user_id);
+    
+    let sent = 0;
+    let failed = 0;
+    const total = userIds.length;
+
+    // Batch yuborish (10 ta parallel)
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < userIds.length; i += BATCH_SIZE) {
+      const batch = userIds.slice(i, i + BATCH_SIZE);
+      
+      await Promise.all(batch.map(async (uid) => {
+        try {
+          if (state.type === 'photo' && state.photoId) {
+            await bot.telegram.sendPhoto(uid, state.photoId, {
+              caption: state.message,
+              parse_mode: 'HTML'
+            });
+          } else {
+            await bot.telegram.sendMessage(uid, state.message, {
+              parse_mode: 'HTML',
+              disable_web_page_preview: false
+            });
+          }
+          sent++;
+        } catch (err) {
+          failed++;
+          // 403 = blocked, 400 = chat not found — normal
+          if (err?.response?.error_code !== 403 && err?.response?.error_code !== 400) {
+            console.log(`Broadcast error to ${uid}:`, err.message);
+          }
+        }
+      }));
+
+      // Telegram limitlaridan qochish uchun kichik pauza
+      if (i + BATCH_SIZE < userIds.length) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+
+    broadcastState.delete(userId);
+
+    await ctx.editMessageText(
+      `✅ *Broadcast yakunlandi!*
+
+📊 *Statistika:*
+├ Jami: ${total} ta user
+├ ✅ Yuborildi: ${sent} ta
+└ ❌ Xato: ${failed} ta`,
+      { parse_mode: 'Markdown' }
+    );
+
+    console.log(`📢 BROADCAST: Admin ${userId} — ${sent}/${total} yuborildi`);
+
+  } catch (err) {
+    console.error('Broadcast error:', err);
+    await ctx.editMessageText('❌ Broadcast xatolik: ' + err.message);
+    broadcastState.delete(userId);
+  }
+});
+
+// Broadcast bekor qilish (tasdiqlash oynasida)
+bot.action('broadcast_reject', async (ctx) => {
+  const userId = ctx.from.id;
+  
+  broadcastState.delete(userId);
+  await ctx.answerCbQuery('❌ Bekor qilindi');
+  await ctx.deleteMessage();
+});
+
+// Admin xabar yozganda (matn)
+bot.on('text', async (ctx) => {
+  const userId = ctx.from.id;
+  const state = broadcastState.get(userId);
+  
+  if (!state || !state.waiting || !ADMIN_IDS.includes(userId)) return;
+  
+  if (state.type === 'text') {
+    const messageText = ctx.message.text;
+    
+    // Xabarni saqlash
+    state.message = messageText;
+    state.waiting = false;
+    broadcastState.set(userId, state);
+
+    // Tasdiqlash so'rash
+    await ctx.reply(
+      `📋 *Xabar tayyor:*
+
+${messageText}
+
+━━━━━━━━━━━━━━
+Barcha foydalanuvchilarga yuborilsinmi?`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Yuborish', callback_data: 'broadcast_confirm_text' },
+              { text: '❌ Bekor', callback_data: 'broadcast_reject' }
+            ]
+          ]
+        }
+      }
+    );
+  }
+});
+
+// Admin rasm yuborganda
+bot.on('photo', async (ctx) => {
+  const userId = ctx.from.id;
+  const state = broadcastState.get(userId);
+  
+  if (!state || !state.waiting || state.type !== 'photo' || !ADMIN_IDS.includes(userId)) return;
+  
+  const photo = ctx.message.photo;
+  const photoId = photo[photo.length - 1].file_id; // Eng yuqori sifatli
+  const caption = ctx.message.caption || '';
+  
+  // Xabarni saqlash
+  state.photoId = photoId;
+  state.message = caption;
+  state.waiting = false;
+  broadcastState.set(userId, state);
+
+  // Tasdiqlash so'rash
+  await ctx.replyWithPhoto(photoId, {
+    caption: `📋 *Rasm tayyor!*
+
+${caption ? `Caption: ${caption}` : '(Caption yo\'q)'}
+
+━━━━━━━━━━━━━━
+Barcha foydalanuvchilarga yuborilsinmi?`,
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Yuborish', callback_data: 'broadcast_confirm_photo' },
+          { text: '❌ Bekor', callback_data: 'broadcast_reject' }
+        ]
+      ]
+    }
+  });
 });
 
 

@@ -488,7 +488,7 @@ app.get("/api/referral/my-friends/:user_id", telegramAuth, async (req, res) => {
     const { user_id } = req.params;
     if (!user_id) return res.status(400).json({ error: "user_id kerak" });
     
-    // Faqat kanalga obuna bo'lgan (aktiv) do'stlarni ko'rsatish
+    // Barcha do'stlarni olish (aktiv va inaktiv)
     const friends = await pool.query(
       `SELECT 
         name,
@@ -498,8 +498,7 @@ app.get("/api/referral/my-friends/:user_id", telegramAuth, async (req, res) => {
         created_at
        FROM users
        WHERE referrer_user_id = $1
-         AND subscribe_user = true
-       ORDER BY created_at DESC`,
+       ORDER BY subscribe_user DESC, created_at DESC`,
       [user_id]
     );
     
