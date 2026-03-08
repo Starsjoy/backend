@@ -303,6 +303,105 @@ app.post("/api/admin/maintenance", adminAuth, (req, res) => {
   console.log(`🔧 Maintenance mode: ${enabled ? 'YOQILDI ⛔' : 'O\'CHIRILDI ✅'}`);
   res.json({ success: true, maintenance: maintenanceMode });
 });
+
+// ======================
+// 📢 BROADCAST — Barcha foydalanuvchilarga xabar yuborish (Bot API)
+// ======================
+app.post("/api/admin/broadcast", adminAuth, async (req, res) => {
+  try {
+    const { message, parseMode } = req.body;
+    
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: "Xabar matni kerak" });
+    }
+    
+    // Barcha user_id larni olish
+    const usersResult = await pool.query(
+      "SELECT DISTINCT user_id FROM users WHERE user_id IS NOT NULL AND user_id != ''"
+    );
+    
+    const users = usersResult.rows;
+    const totalUsers = users.length;
+    
+    if (totalUsers === 0) {
+      return res.json({ success: true, sent: 0, failed: 0, total: 0 });
+    }
+    
+    console.log(`📢 Broadcast boshlanmoqda: ${totalUsers} ta foydalanuvchiga`);
+    
+    let sent = 0;
+    let failed = 0;
+    const errors = [];
+    
+    // Bot token orqali yuborish (Telegraf bot ishlamasa ham ishlaydi)
+    const botToken = process.env.BOT_TOKEN;
+    if (!botToken) {
+      return res.status(500).json({ error: "BOT_TOKEN topilmadi" });
+    }
+    
+    // Har bir foydalanuvchiga xabar yuborish
+    const BATCH_SIZE = 25;
+    const DELAY_MS = 50;
+    
+    for (let i = 0; i < users.length; i += BATCH_SIZE) {
+      const batch = users.slice(i, i + BATCH_SIZE);
+      
+      const promises = batch.map(async (user) => {
+        try {
+          const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: user.user_id,
+              text: message.trim(),
+              parse_mode: parseMode || 'HTML',
+              disable_web_page_preview: true
+            })
+          });
+          
+          const data = await response.json();
+          
+          if (data.ok) {
+            sent++;
+            return { success: true, user_id: user.user_id };
+          } else {
+            failed++;
+            // Blocked yoki deleted users
+            if (!data.description?.includes('blocked') && !data.description?.includes('deactivated')) {
+              errors.push({ user_id: user.user_id, error: data.description });
+            }
+            return { success: false, user_id: user.user_id, error: data.description };
+          }
+        } catch (err) {
+          failed++;
+          return { success: false, user_id: user.user_id, error: err.message };
+        }
+      });
+      
+      await Promise.all(promises);
+      
+      // Rate limit uchun kutish
+      if (i + BATCH_SIZE < users.length) {
+        await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+      }
+    }
+    
+    console.log(`📢 Broadcast tugadi: ${sent}/${totalUsers} yuborildi, ${failed} xato`);
+    
+    res.json({
+      success: true,
+      sent,
+      failed,
+      total: totalUsers,
+      errors: errors.slice(0, 10)
+    });
+    
+  } catch (err) {
+    console.error("❌ /api/admin/broadcast ERROR:", err);
+    res.status(500).json({ error: "Server xatosi", details: err.message });
+  }
+});
+
 // ======================
 // Postgresga ulanish
 // ======================
@@ -552,20 +651,23 @@ app.get("/api/transactions/all", adminAuth, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
-        id,
-        order_id,
-        recipient_username AS username,
-        recipient,
-        type_amount AS stars,
-        summ AS amount,
-        status,
-        payment_status,
-        transaction_id,
-        created_at,
-        order_type
-      FROM orders 
-      WHERE order_type = 'stars'
-      ORDER BY id DESC
+        o.id,
+        o.order_id,
+        o.owner_user_id,
+        u.username AS sender_username,
+        o.recipient_username AS username,
+        o.recipient,
+        o.type_amount AS stars,
+        o.summ AS amount,
+        o.status,
+        o.payment_status,
+        o.transaction_id,
+        o.created_at,
+        o.order_type
+      FROM orders o
+      LEFT JOIN users u ON o.owner_user_id = u.user_id
+      WHERE o.order_type = 'stars'
+      ORDER BY o.id DESC
     `);
     
     // Status mapping: completed → stars_sent
@@ -592,20 +694,23 @@ app.get("/api/transactions/status/:status", adminAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT 
-        id,
-        order_id,
-        recipient_username AS username,
-        recipient,
-        type_amount AS stars,
-        summ AS amount,
-        status,
-        payment_status,
-        transaction_id,
-        created_at,
-        order_type
-      FROM orders 
-      WHERE status = $1 AND order_type = 'stars'
-      ORDER BY id DESC`,
+        o.id,
+        o.order_id,
+        o.owner_user_id,
+        u.username AS sender_username,
+        o.recipient_username AS username,
+        o.recipient,
+        o.type_amount AS stars,
+        o.summ AS amount,
+        o.status,
+        o.payment_status,
+        o.transaction_id,
+        o.created_at,
+        o.order_type
+      FROM orders o
+      LEFT JOIN users u ON o.owner_user_id = u.user_id
+      WHERE o.status = $1 AND o.order_type = 'stars'
+      ORDER BY o.id DESC`,
       [dbStatus]
     );
     
@@ -926,7 +1031,7 @@ app.post("/api/payments/match", internalAuth, async (req, res) => {
       deliverPremiumOrder(order)
         .catch(err => console.error("❌ Premium delivery error:", err.message));
     } else if (order.order_type === 'gift') {
-      deliverGiftOrder(order)
+      sendGiftToUser(order)
         .catch(err => console.error("❌ Gift delivery error:", err.message));
     }
     // Backward compatible response
@@ -1542,30 +1647,32 @@ app.get("/api/admin/premium/list", adminAuth, async (req, res) => {
     const { status, search } = req.query;
     let query = `
       SELECT 
-        id, order_id, owner_user_id, 
-        recipient_username AS username,
-        recipient,
-        order_type,
-        type_amount AS months,
-        summ AS amount,
-        payment_method, payment_status, status, transaction_id,
-        created_at
-      FROM orders 
-      WHERE order_type='premium'
+        o.id, o.order_id, o.owner_user_id, 
+        u.username AS sender_username,
+        o.recipient_username AS username,
+        o.recipient,
+        o.order_type,
+        o.type_amount AS months,
+        o.summ AS amount,
+        o.payment_method, o.payment_status, o.status, o.transaction_id,
+        o.created_at
+      FROM orders o
+      LEFT JOIN users u ON o.owner_user_id = u.user_id
+      WHERE o.order_type='premium'
     `;
     const params = [];
     // filter: status
     if (status && status !== "all") {
       params.push(status);
-      query += ` AND status = $${params.length}`;
+      query += ` AND o.status = $${params.length}`;
     }
     // filter: search (recipient_username, recipient)
     if (search) {
       params.push(`%${search}%`);
       params.push(`%${search}%`);
-      query += ` AND (recipient_username ILIKE $${params.length - 1} OR recipient ILIKE $${params.length})`;
+      query += ` AND (o.recipient_username ILIKE $${params.length - 1} OR o.recipient ILIKE $${params.length})`;
     }
-    query += " ORDER BY id DESC";
+    query += " ORDER BY o.id DESC";
     const result = await pool.query(query, params);
     res.json({ success: true, orders: result.rows });
   } catch (err) {
@@ -2531,10 +2638,11 @@ const ALLOWED_GIFT_IDS = [
   "5170145012310081615", "5170233102089322756",
   "5170250947678437525", "5168103777563050263",
   "5170144170496491616", "5170314324215857265",
-  "5170564780938756245", "5168043875654172773",
+  "5170564780938756245", "6028601630662853006",
+  "5922558454332916696", "5801108895304779062",
+  "5800655655995968830", "5866352046986232958",
+  "5956217000635139069", "5168043875654172773",
   "5170690322832818290", "5170521118301225164",
-  "6028601630662853006", "5922558454332916696",
-  "5801108895304779062", "5800655655995968830",
 ];
 const GIFT_PRICE_MAP = { 15: 3500, 25: 5500, 50: 11000, 100: 22000 };
 const GIFT_STARS_MAP = {
@@ -2543,7 +2651,8 @@ const GIFT_STARS_MAP = {
   "5170144170496491616": 50, "5170314324215857265": 50,
   "5170564780938756245": 50, "6028601630662853006": 50,
   "5922558454332916696": 50, "5801108895304779062": 50,
-  "5800655655995968830": 50, "5168043875654172773": 100,
+  "5800655655995968830": 50, "5866352046986232958": 50,
+  "5956217000635139069": 50, "5168043875654172773": 100,
   "5170690322832818290": 100, "5170521118301225164": 100,
 };
 // ======================
@@ -2731,7 +2840,7 @@ app.post("/api/gift/match", internalAuth, async (req, res) => {
     console.log(`🎉 Gift to'lov tasdiqlandi: #${order.id} | ${order.recipient_username} → @${order.recipient} | ${order.summ} so'm`);
     
     // Gift yuborish
-    deliverGiftOrder(order)
+    sendGiftToUser(order)
       .then(() => {
         console.log(`🎁 Gift yuborildi: #${order.id} → @${order.recipient}`);
       })
@@ -2759,7 +2868,8 @@ app.post("/api/gift/match", internalAuth, async (req, res) => {
 // ======================
 async function sendGiftToUser(order) {
   try {
-    console.log(`🎁 sendGiftToUser: #${order.id} → @${order.recipient_username} | gift: ${order.gift_id}`);
+    // order.recipient = qabul qiluvchi username, order.recipient_username = yuboruvchi
+    console.log(`🎁 sendGiftToUser: #${order.id} → @${order.recipient} | gift: ${order.gift_id}`);
     // balanceChecker.js dagi userbot orqali gift yuborish
     const giftRes = await fetch('http://localhost:5002/api/gift/send-userbot', {
       method: 'POST',
@@ -2768,7 +2878,7 @@ async function sendGiftToUser(order) {
         'X-Internal-Key': INTERNAL_SECRET,
       },
       body: JSON.stringify({
-        recipientUsername: order.recipient_username,
+        recipientUsername: order.recipient, // TO'G'RILANDI: recipient (qabul qiluvchi)
         giftId: order.gift_id,
         message: order.gift_comment || undefined,
         anonymous: order.gift_anonymous || false,
@@ -2787,9 +2897,10 @@ async function sendGiftToUser(order) {
       "UPDATE orders SET status = 'completed' WHERE id = $1",
       [order.id]
     );
-    console.log(`✅ Gift muvaffaqiyatli yuborildi: #${order.id}`);
+    console.log(`✅ Gift muvaffaqiyatli yuborildi: #${order.id} → @${order.recipient}`);
     // 📢 Kanalga xabar
-    sendChannelNotification(order.id, 'gift').catch(err => console.error("Gift notification error:", err));
+    sendUnifiedChannelNotification(order, 'gift').catch(err => console.error("Gift notification error:", err));
+    return { status: 'delivered', message: 'Gift muvaffaqiyatli yuborildi' };
   } catch (err) {
     console.error(`❌ sendGiftToUser error #${order.id}:`, err);
     await pool.query(
@@ -3238,7 +3349,7 @@ app.post("/api/v2/payments/match", internalAuth, async (req, res) => {
       } else if (order.order_type === 'premium') {
         deliveryResult = await deliverPremiumOrder(order);
       } else if (order.order_type === 'gift') {
-        deliveryResult = await deliverGiftOrder(order);
+        deliveryResult = await sendGiftToUser(order);
       }
       
       console.log("📦 Delivery natijasi:", deliveryResult);
@@ -3665,7 +3776,7 @@ app.post("/api/v2/admin/orders/:id/redeliver", adminAuth, async (req, res) => {
     } else if (order.order_type === 'premium') {
       deliveryResult = await deliverPremiumOrder(order);
     } else if (order.order_type === 'gift') {
-      deliveryResult = await deliverGiftOrder(order);
+      deliveryResult = await sendGiftToUser(order);
     }
     
     res.json({ success: true, delivery: deliveryResult });

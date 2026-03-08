@@ -356,12 +356,20 @@ bot.action(/^broadcast_confirm_(.+)$/, async (ctx) => {
 
   // Barcha user_id larni olish
   try {
-    const result = await pool.query('SELECT user_id FROM users WHERE user_id IS NOT NULL');
-    const userIds = result.rows.map(r => r.user_id);
+    const result = await pool.query("SELECT user_id FROM users WHERE user_id IS NOT NULL AND user_id != ''");
+    const userIds = result.rows.map(r => String(r.user_id)).filter(id => id && id.length > 0);
+    
+    if (userIds.length === 0) {
+      await ctx.editMessageText('❌ Foydalanuvchilar topilmadi');
+      broadcastState.delete(userId);
+      return;
+    }
     
     let sent = 0;
     let failed = 0;
     const total = userIds.length;
+
+    console.log(`📢 Broadcast boshlanmoqda: ${total} ta userga | Admin: ${userId}`);
 
     // Batch yuborish (10 ta parallel)
     const BATCH_SIZE = 10;
@@ -429,51 +437,56 @@ bot.action('broadcast_reject', async (ctx) => {
 
 // Admin xabar yozganda (matn)
 bot.on('text', async (ctx) => {
-  const userId = ctx.from.id;
-  const state = broadcastState.get(userId);
-  
-  if (!state || !state.waiting || !ADMIN_IDS.includes(userId)) return;
-  
-  if (state.type === 'text') {
-    const messageText = ctx.message.text;
+  try {
+    const userId = ctx.from.id;
+    const state = broadcastState.get(userId);
     
-    // Xabarni saqlash
-    state.message = messageText;
-    state.waiting = false;
-    broadcastState.set(userId, state);
+    if (!state || !state.waiting || !ADMIN_IDS.includes(userId)) return;
+    
+    if (state.type === 'text') {
+      const messageText = ctx.message.text;
+      
+      // Xabarni saqlash
+      state.message = messageText;
+      state.waiting = false;
+      broadcastState.set(userId, state);
 
-    // Tasdiqlash so'rash
-    await ctx.reply(
-      `📋 *Xabar tayyor:*
+      // Tasdiqlash so'rash
+      await ctx.reply(
+        `📋 *Xabar tayyor:*
 
 ${messageText}
 
 ━━━━━━━━━━━━━━
 Barcha foydalanuvchilarga yuborilsinmi?`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '✅ Yuborish', callback_data: 'broadcast_confirm_text' },
-              { text: '❌ Bekor', callback_data: 'broadcast_reject' }
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '✅ Yuborish', callback_data: 'broadcast_confirm_text' },
+                { text: '❌ Bekor', callback_data: 'broadcast_reject' }
+              ]
             ]
-          ]
-        }
+          }
       }
     );
+    }
+  } catch (err) {
+    console.error('❌ Broadcast text handler error:', err);
   }
 });
 
 // Admin rasm yuborganda
 bot.on('photo', async (ctx) => {
-  const userId = ctx.from.id;
-  const state = broadcastState.get(userId);
-  
-  if (!state || !state.waiting || state.type !== 'photo' || !ADMIN_IDS.includes(userId)) return;
-  
-  const photo = ctx.message.photo;
-  const photoId = photo[photo.length - 1].file_id; // Eng yuqori sifatli
+  try {
+    const userId = ctx.from.id;
+    const state = broadcastState.get(userId);
+    
+    if (!state || !state.waiting || state.type !== 'photo' || !ADMIN_IDS.includes(userId)) return;
+    
+    const photo = ctx.message.photo;
+    const photoId = photo[photo.length - 1].file_id; // Eng yuqori sifatli
   const caption = ctx.message.caption || '';
   
   // Xabarni saqlash
@@ -500,6 +513,9 @@ Barcha foydalanuvchilarga yuborilsinmi?`,
       ]
     }
   });
+  } catch (err) {
+    console.error('❌ Broadcast photo handler error:', err);
+  }
 });
 
 
