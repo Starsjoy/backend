@@ -300,6 +300,8 @@ bot.action('broadcast_text', async (ctx) => {
   await ctx.answerCbQuery();
   broadcastState.set(userId, { waiting: true, type: 'text' });
   
+  console.log(`📝 BROADCAST_TEXT: userId=${userId}, state set:`, broadcastState.get(userId));
+  
   await ctx.editMessageText(
     `📝 *Matn xabarni yuboring*
 
@@ -440,6 +442,8 @@ bot.on('text', async (ctx) => {
   try {
     const userId = ctx.from.id;
     const state = broadcastState.get(userId);
+    
+    console.log(`📝 TEXT: userId=${userId}, hasState=${!!state}, waiting=${state?.waiting}, type=${state?.type}`);
     
     if (!state || !state.waiting || !ADMIN_IDS.includes(userId)) return;
     
