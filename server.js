@@ -2735,7 +2735,7 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
       console.log('⚠️ Balance checker ga ulanib bo\'lmadi');
     }
 
-    // 20 daqiqadan keyin expired
+    // 5 daqiqadan keyin expired
     setTimeout(async () => {
       try {
         const check = await pool.query(
@@ -2752,7 +2752,7 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
       } catch (e) {
         console.error("❌ Gift expiry xatosi:", e);
       }
-    }, 20 * 60 * 1000);
+    }, 5 * 60 * 1000);
 
     // Backward compatible response
     res.json({
