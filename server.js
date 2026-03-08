@@ -2894,7 +2894,7 @@ async function sendGiftToUser(order) {
     }
     // Muvaffaqiyatli — statusni yangilash
     await pool.query(
-      "UPDATE orders SET status = 'completed' WHERE id = $1",
+      "UPDATE orders SET status = 'gift_sent' WHERE id = $1",
       [order.id]
     );
     console.log(`✅ Gift muvaffaqiyatli yuborildi: #${order.id} → @${order.recipient}`);
