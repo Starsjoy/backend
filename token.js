@@ -300,8 +300,6 @@ bot.action('broadcast_text', async (ctx) => {
   await ctx.answerCbQuery();
   broadcastState.set(userId, { waiting: true, type: 'text' });
   
-  console.log(`📝 BROADCAST_TEXT: userId=${userId}, state set:`, broadcastState.get(userId));
-  
   await ctx.editMessageText(
     `📝 *Matn xabarni yuboring*
 
@@ -443,8 +441,6 @@ bot.on('text', async (ctx) => {
     const userId = ctx.from.id;
     const state = broadcastState.get(userId);
     
-    console.log(`📝 TEXT: userId=${userId}, hasState=${!!state}, waiting=${state?.waiting}, type=${state?.type}`);
-    
     if (!state || !state.waiting || !ADMIN_IDS.includes(userId)) return;
     
     if (state.type === 'text') {
@@ -455,16 +451,15 @@ bot.on('text', async (ctx) => {
       state.waiting = false;
       broadcastState.set(userId, state);
 
-      // Tasdiqlash so'rash
+      // Tasdiqlash so'rash (parse_mode yo'q - user xabarida maxsus belgilar bo'lishi mumkin)
       await ctx.reply(
-        `📋 *Xabar tayyor:*
+        `📋 Xabar tayyor:
 
 ${messageText}
 
 ━━━━━━━━━━━━━━
 Barcha foydalanuvchilarga yuborilsinmi?`,
         {
-          parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
               [
@@ -499,15 +494,14 @@ bot.on('photo', async (ctx) => {
   state.waiting = false;
   broadcastState.set(userId, state);
 
-  // Tasdiqlash so'rash
+  // Tasdiqlash so'rash (parse_mode yo'q - user caption'ida maxsus belgilar bo'lishi mumkin)
   await ctx.replyWithPhoto(photoId, {
-    caption: `📋 *Rasm tayyor!*
+    caption: `📋 Rasm tayyor!
 
 ${caption ? `Caption: ${caption}` : '(Caption yo\'q)'}
 
 ━━━━━━━━━━━━━━
 Barcha foydalanuvchilarga yuborilsinmi?`,
-    parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
         [
