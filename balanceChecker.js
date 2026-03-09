@@ -387,6 +387,11 @@ app.get('/api/userbot/stars-balance', async (req, res) => {
             })
         );
 
+        console.log(`📊 GetStarsStatus full response:`, result);
+        console.log(`📊 Result keys:`, Object.keys(result || {}));
+        console.log(`📊 result.balance type:`, typeof result?.balance);
+        console.log(`📊 result.balance value:`, result?.balance);
+
         const starsBalance = Number(result.balance) || 0;
 
         console.log(`⭐ Stars balance: ${starsBalance}`);
@@ -394,11 +399,46 @@ app.get('/api/userbot/stars-balance', async (req, res) => {
         res.json({
             success: true,
             stars_balance: starsBalance,
-            subscriptions: result.subscriptions || []
+            subscriptions: result.subscriptions || [],
+            raw_response: result  // Debug uchun
         });
 
     } catch (err) {
         console.error('❌ Stars balance olishda xato:', err);
+        console.error('❌ Error stack:', err?.stack);
+        res.status(500).json({ success: false, error: err?.message || 'Noma\'lum xato', details: err?.toString() });
+    }
+});
+
+// ⭐ ALTERNATIVE - User profile orqali stars bilish
+app.get('/api/userbot/user-me', async (req, res) => {
+    try {
+        const key = req.headers['x-internal-key'];
+        if (key !== INTERNAL_SECRET) {
+            return res.status(403).json({ success: false, error: 'Ruxsat berilmagan' });
+        }
+
+        if (!isClientReady || !client?.connected) {
+            return res.status(503).json({ success: false, error: 'Userbot client tayyor emas' });
+        }
+
+        console.log('👤 Me orqali ma\'lumot olish...');
+
+        // User info olish
+        const me = await client.getMe();
+        console.log('👤 User info:', me);
+        console.log('👤 Me keys:', Object.keys(me || {}));
+
+        res.json({
+            success: true,
+            user: me,
+            username: me?.username,
+            firstName: me?.firstName,
+            id: me?.id
+        });
+
+    } catch (err) {
+        console.error('❌ User me olishda xato:', err);
         res.status(500).json({ success: false, error: err?.message || 'Noma\'lum xato' });
     }
 });
