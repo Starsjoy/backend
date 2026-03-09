@@ -365,11 +365,16 @@ app.get('/api/userbot/stars-balance', async (req, res) => {
     try {
         // Internal auth tekshiruvi
         const key = req.headers['x-internal-key'];
+        console.log(`📡 /api/userbot/stars-balance so'rov keldi. Key: ${key ? 'provided' : 'NOT PROVIDED'}`);
+        console.log(`📡 Expected: ${INTERNAL_SECRET ? 'CONFIGURED' : 'NOT CONFIGURED'}`);
+        
         if (key !== INTERNAL_SECRET) {
+            console.error(`❌ Key mos kelmadi! Received: ${key}, Expected: ${INTERNAL_SECRET}`);
             return res.status(403).json({ success: false, error: 'Ruxsat berilmagan' });
         }
 
         if (!isClientReady || !client?.connected) {
+            console.error(`❌ Client tayyor emas! isClientReady=${isClientReady}, connected=${client?.connected}`);
             return res.status(503).json({ success: false, error: 'Userbot client tayyor emas' });
         }
 

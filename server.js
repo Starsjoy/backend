@@ -2039,7 +2039,7 @@ app.get("/api/stats/leaderboard", telegramAuth, async (req, res) => {
           o.owner_user_id,
           SUM(o.summ)::BIGINT AS total
         FROM orders o
-        WHERE o.status = 'completed' 
+        WHERE o.status IN ('stars_sent', 'premium_sent', 'gift_sent')
           AND o.order_type IN ('stars', 'premium', 'gift')
           AND o.owner_user_id IS NOT NULL
           ${dateFilter}
@@ -3294,7 +3294,7 @@ app.post("/api/admin/gift/send/:id", adminAuth, async (req, res) => {
     const q = await pool.query("SELECT * FROM orders WHERE id = $1 AND order_type='gift'", [id]);
     if (!q.rows.length) return res.status(404).json({ error: "Gift order topilmadi" });
     const order = q.rows[0];
-    if (order.status === "completed") {
+    if (order.status === "gift_sent") {
       return res.status(400).json({ error: "Gift allaqachon yuborilgan" });
     }
     await sendGiftToUser(order);
@@ -3359,6 +3359,7 @@ const BALANCE_CHECKER_URL = process.env.BALANCE_CHECKER_URL || 'http://localhost
 app.get("/api/admin/bot-stars-balance", adminAuth, async (req, res) => {
   try {
     // Userbot orqali stars balance olish
+    console.log(`📡 Bot stars balance so'ralmoqda... (INTERNAL_SECRET=${INTERNAL_SECRET ? 'set' : 'NOT SET'})`);
     const response = await fetch(`${BALANCE_CHECKER_URL}/api/userbot/stars-balance`, {
       method: 'GET',
       headers: {
@@ -3366,7 +3367,9 @@ app.get("/api/admin/bot-stars-balance", adminAuth, async (req, res) => {
       }
     });
     
+    console.log(`📡 Balance checker response status: ${response.status}`);
     const data = await response.json();
+    console.log(`📡 Balance checker response:`, data);
     
     if (!data.success) {
       console.log("⚠️ Userbot stars balance xato:", data.error);
