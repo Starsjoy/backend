@@ -77,6 +77,19 @@ const authLimiter = rateLimit({
   max: 30,
   message: { error: 'Juda ko\'p urinish.' },
 });
+
+// Admin uchun yumshoq rate limit
+const adminLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 daqiqa
+  max: 100, // 100 ta request
+  message: { error: 'Juda ko\'p so\'rov. 1 daqiqadan keyin urinib ko\'ring.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Admin routes uchun alohida rate limit
+app.use('/api/admin/', adminLimiter);
+
 // Barcha API larga umumiy rate limit
 app.use('/api/', generalLimiter);
 // ======================
