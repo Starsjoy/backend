@@ -392,9 +392,10 @@ app.get('/api/userbot/stars-balance', async (req, res) => {
         console.log(`📊 result.balance type:`, typeof result?.balance);
         console.log(`📊 result.balance value:`, result?.balance);
 
-        const starsBalance = Number(result.balance) || 0;
+        // ⭐ XATOLIK: result.balance object bo'lib, amount field ichida raqam bor
+        const starsBalance = Number(result.balance?.amount?.value || 0);
 
-        console.log(`⭐ Stars balance: ${starsBalance}`);
+        console.log(`⭐ Stars balance (correct): ${starsBalance}`);
 
         res.json({
             success: true,

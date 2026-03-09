@@ -3369,7 +3369,7 @@ app.get("/api/admin/bot-stars-balance", adminAuth, async (req, res) => {
     
     console.log(`📡 Balance checker response status: ${response.status}`);
     const data = await response.json();
-    console.log(`📡 Balance checker response:`, data);
+    console.log(`📡 Balance checker response (stars_balance):`, data.stars_balance);
     
     if (!data.success) {
       console.log("⚠️ Userbot stars balance xato:", data.error);
