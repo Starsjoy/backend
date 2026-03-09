@@ -403,6 +403,151 @@ app.post("/api/admin/broadcast", adminAuth, async (req, res) => {
 });
 
 // ======================
+// 🔔 NOTIFICATIONS API
+// ======================
+// Admin: Send notification (global or to specific user)
+app.post("/api/admin/notifications", adminAuth, async (req, res) => {
+  try {
+    const { title, message, type, user_id, is_global } = req.body;
+    
+    if (!title || !message) {
+      return res.status(400).json({ error: "title va message kerak" });
+    }
+    
+    const notifType = type || 'info'; // info, success, warning, promo
+    
+    if (is_global) {
+      // Global notification - barcha userlarga
+      const result = await pool.query(
+        `INSERT INTO notifications (title, message, type, is_global, created_at)
+         VALUES ($1, $2, $3, true, NOW())
+         RETURNING *`,
+        [title, message, notifType]
+      );
+      console.log(`🔔 Global notification yuborildi: "${title}"`);
+      res.json({ success: true, notification: result.rows[0], type: 'global' });
+    } else if (user_id) {
+      // Specific user notification
+      const result = await pool.query(
+        `INSERT INTO notifications (user_id, title, message, type, is_global, created_at)
+         VALUES ($1, $2, $3, $4, false, NOW())
+         RETURNING *`,
+        [user_id, title, message, notifType]
+      );
+      console.log(`🔔 Notification yuborildi: user_id=${user_id}, "${title}"`);
+      res.json({ success: true, notification: result.rows[0], type: 'personal' });
+    } else {
+      return res.status(400).json({ error: "user_id yoki is_global kerak" });
+    }
+  } catch (err) {
+    console.error("❌ /api/admin/notifications ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+// Get user notifications (personal + global)
+app.get("/api/notifications/:user_id", telegramAuth, async (req, res) => {
+  try {
+    const { user_id } = req.params;
+    
+    // Get personal + global notifications
+    const result = await pool.query(
+      `SELECT * FROM notifications 
+       WHERE user_id = $1 OR is_global = true
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [user_id]
+    );
+    
+    res.json({ success: true, notifications: result.rows });
+  } catch (err) {
+    console.error("❌ /api/notifications ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+// Get unread count
+app.get("/api/notifications/unread/:user_id", telegramAuth, async (req, res) => {
+  try {
+    const { user_id } = req.params;
+    
+    // Count unread personal + global notifications
+    // For global notifications, we need to track read status per user
+    // Simple approach: count notifications created after user's last read time
+    const result = await pool.query(
+      `SELECT COUNT(*) as count FROM notifications 
+       WHERE (user_id = $1 OR is_global = true) AND is_read = false`,
+      [user_id]
+    );
+    
+    res.json({ success: true, unread_count: parseInt(result.rows[0].count) || 0 });
+  } catch (err) {
+    console.error("❌ /api/notifications/unread ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+// Mark notification as read
+app.post("/api/notifications/:id/read", telegramAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    await pool.query(
+      `UPDATE notifications SET is_read = true WHERE id = $1`,
+      [id]
+    );
+    
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ /api/notifications/read ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+// Mark all as read for user
+app.post("/api/notifications/read-all/:user_id", telegramAuth, async (req, res) => {
+  try {
+    const { user_id } = req.params;
+    
+    await pool.query(
+      `UPDATE notifications SET is_read = true 
+       WHERE (user_id = $1 OR is_global = true) AND is_read = false`,
+      [user_id]
+    );
+    
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ /api/notifications/read-all ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+// Admin: Get all notifications
+app.get("/api/admin/notifications", adminAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM notifications ORDER BY created_at DESC LIMIT 100`
+    );
+    res.json({ success: true, notifications: result.rows });
+  } catch (err) {
+    console.error("❌ /api/admin/notifications GET ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+// Admin: Delete notification
+app.delete("/api/admin/notifications/:id", adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query(`DELETE FROM notifications WHERE id = $1`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ /api/admin/notifications DELETE ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+// ======================
 // Postgresga ulanish
 // ======================
 const pool = new Pool({
@@ -489,6 +634,24 @@ const pool = new Pool({
     );
   `);
   console.log("✅ Table 'discount_packages' ready");
+})();
+// ======================
+// 🔔 NOTIFICATIONS TABLE
+// ======================
+(async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      type TEXT DEFAULT 'info',
+      is_read BOOLEAN DEFAULT false,
+      is_global BOOLEAN DEFAULT false,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'Asia/Tashkent')
+    );
+  `);
+  console.log("✅ Table 'notifications' ready");
 })();
 // ======================
 // 📊 REFERRAL LEADERBOARD (referrer_user_id orqali sanash - faqat subscribe_user = true)
@@ -2538,7 +2701,140 @@ app.post("/api/referral/claim", authLimiter, telegramAuth, async (req, res) => {
   }
 });
 // ======================
-// 🆕 USER LANGUAGE ENDPOINT
+// � REFERRAL WITHDRAW — Referral balansdan gift yechish
+// ======================
+app.post("/api/referral/withdraw", authLimiter, telegramAuth, async (req, res) => {
+  try {
+    const { giftId } = req.body;
+    
+    // Telegram user info
+    const tgUser = req.telegramUser;
+    const userId = tgUser?.id ? String(tgUser.id) : null;
+    const username = tgUser?.username;
+    
+    if (!userId || !username) {
+      return res.status(400).json({ error: "Telegram user ma'lumotlari topilmadi" });
+    }
+    if (!giftId) {
+      return res.status(400).json({ error: "giftId kerak" });
+    }
+    
+    // Gift ID tekshirish
+    const ALLOWED_GIFT_IDS_WITHDRAW = [
+      "5170145012310081615", "5170233102089322756",
+      "5170250947678437525", "5168103777563050263",
+      "5170144170496491616", "5170314324215857265",
+      "5170564780938756245", "6028601630662853006",
+      "5922558454332916696", "5801108895304779062",
+      "5800655655995968830", "5866352046986232958",
+      "5956217000635139069", "5168043875654172773",
+      "5170690322832818290", "5170521118301225164",
+    ];
+    const GIFT_STARS_WITHDRAW = {
+      "5170145012310081615": 15, "5170233102089322756": 15,
+      "5170250947678437525": 25, "5168103777563050263": 25,
+      "5170144170496491616": 50, "5170314324215857265": 50,
+      "5170564780938756245": 50, "6028601630662853006": 50,
+      "5922558454332916696": 50, "5801108895304779062": 50,
+      "5800655655995968830": 50, "5866352046986232958": 50,
+      "5956217000635139069": 50, "5168043875654172773": 100,
+      "5170690322832818290": 100, "5170521118301225164": 100,
+    };
+    
+    if (!ALLOWED_GIFT_IDS_WITHDRAW.includes(giftId)) {
+      return res.status(400).json({ error: "Noto'g'ri gift ID" });
+    }
+    
+    const giftStars = GIFT_STARS_WITHDRAW[giftId];
+    if (!giftStars) {
+      return res.status(400).json({ error: "Gift narxi topilmadi" });
+    }
+    
+    // User balansini tekshirish
+    const userRes = await pool.query(
+      "SELECT referral_balance FROM users WHERE user_id = $1",
+      [userId]
+    );
+    
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: "User topilmadi" });
+    }
+    
+    const currentBalance = userRes.rows[0].referral_balance || 0;
+    if (currentBalance < giftStars) {
+      return res.status(400).json({ 
+        error: "Yetarli balans yo'q", 
+        required: giftStars,
+        current: currentBalance 
+      });
+    }
+    
+    // Transaction boshlaymiz
+    const client = await pool.connect();
+    let order;
+    try {
+      await client.query('BEGIN');
+      
+      // Balansni kamaytirish
+      await client.query(
+        "UPDATE users SET referral_balance = referral_balance - $1 WHERE user_id = $2",
+        [giftStars, userId]
+      );
+      
+      // Order yaratish (to'lov allaqachon qabul qilingan - referral balansdan)
+      const orderId = crypto.randomUUID();
+      const result = await client.query(
+        `INSERT INTO orders
+         (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, gift_id, gift_anonymous, gift_comment, created_at)
+         VALUES ($1, $2, $3, $4, 'gift', $5, 0, 'referral', 'completed', 'pending', $6, false, 'Referral yechish', NOW())
+         RETURNING *`,
+        [
+          orderId,
+          userId,
+          username,
+          username,  // O'ziga yuboriladi
+          giftStars,
+          giftId,
+        ]
+      );
+      
+      await client.query('COMMIT');
+      order = result.rows[0];
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+    
+    console.log(`🎁 Referral withdraw: #${order.id} | @${username} | ${giftStars}⭐ (gift: ${giftId})`);
+    
+    // Gift yuborish (userbot orqali)
+    sendGiftToUser(order);
+    
+    // Yangi balansni olish
+    const newBalanceRes = await pool.query(
+      "SELECT referral_balance FROM users WHERE user_id = $1",
+      [userId]
+    );
+    const newBalance = newBalanceRes.rows[0]?.referral_balance || 0;
+    
+    res.json({
+      success: true,
+      order_id: order.id,
+      gift_id: giftId,
+      stars: giftStars,
+      new_balance: newBalance,
+      message: "Gift yuborilmoqda..."
+    });
+    
+  } catch (err) {
+    console.error("❌ /api/referral/withdraw ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+// ======================
+// �🆕 USER LANGUAGE ENDPOINT
 // ======================
 app.post("/api/user/language", telegramAuth, async (req, res) => {
   try {
@@ -2644,7 +2940,7 @@ const ALLOWED_GIFT_IDS = [
   "5956217000635139069", "5168043875654172773",
   "5170690322832818290", "5170521118301225164",
 ];
-const GIFT_PRICE_MAP = { 15: 3500, 25: 5500, 50: 11000, 100: 22000 };
+const GIFT_PRICE_MAP = { 15: 4000, 25: 6000, 50: 12000, 100: 24000 };
 const GIFT_STARS_MAP = {
   "5170145012310081615": 15, "5170233102089322756": 15,
   "5170250947678437525": 25, "5168103777563050263": 25,
