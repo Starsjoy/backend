@@ -94,31 +94,6 @@ app.use('/api/admin/', adminLimiter);
 app.use('/api/', generalLimiter);
 
 // ======================
-// 🛡️ USER PENDING ORDERS LIMIT - Bir user uchun max 5 ta pending order
-// ======================
-const MAX_PENDING_ORDERS_PER_USER = 5;
-const PENDING_ORDER_WINDOW_MS = 5 * 60 * 1000; // 5 daqiqa
-
-async function checkUserPendingOrders(userId) {
-  if (!userId) return 0;
-  
-  try {
-    const result = await pool.query(`
-      SELECT COUNT(*) as count 
-      FROM orders 
-      WHERE owner_user_id = $1 
-        AND status IN ('pending', 'payment_info', 'payment_received')
-        AND created_at > NOW() - INTERVAL '5 minutes'
-    `, [String(userId)]);
-    
-    return parseInt(result.rows[0].count) || 0;
-  } catch (err) {
-    console.error("❌ Pending orders check error:", err);
-    return 0; // Xatolik bo'lsa, cheklashmaslik
-  }
-}
-
-// ======================
 // 🛡️ SECURITY: Telegram WebApp initData validatsiya
 // ======================
 function validateTelegramInitData(initData) {
@@ -1452,18 +1427,6 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
 
-    // 🛡️ Pending orders limit tekshiruvi
-    const pendingCount = await checkUserPendingOrders(ownerUserId);
-    if (pendingCount >= MAX_PENDING_ORDERS_PER_USER) {
-      console.log(`⚠️ User ${ownerUserId} da ${pendingCount} ta pending order mavjud (max: ${MAX_PENDING_ORDERS_PER_USER})`);
-      return res.status(429).json({
-        error: `Sizda ${pendingCount} ta faol buyurtma mavjud. Avval ularni yakunlang yoki vaqt tugashini kuting.`,
-        code: "MAX_PENDING_ORDERS",
-        pendingCount: pendingCount,
-        maxAllowed: MAX_PENDING_ORDERS_PER_USER
-      });
-    }
-
     // 🎯 PRICE SLOT SYSTEM - Dinamik narx
     const priceSlotIndex = getAvailablePriceSlot(starsNum);
     
@@ -2047,18 +2010,6 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
     // Telegram user_id olish
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
-
-    // 🛡️ Pending orders limit tekshiruvi
-    const pendingCount = await checkUserPendingOrders(ownerUserId);
-    if (pendingCount >= MAX_PENDING_ORDERS_PER_USER) {
-      console.log(`⚠️ User ${ownerUserId} da ${pendingCount} ta pending order mavjud (max: ${MAX_PENDING_ORDERS_PER_USER})`);
-      return res.status(429).json({
-        error: `Sizda ${pendingCount} ta faol buyurtma mavjud. Avval ularni yakunlang yoki vaqt tugashini kuting.`,
-        code: "MAX_PENDING_ORDERS",
-        pendingCount: pendingCount,
-        maxAllowed: MAX_PENDING_ORDERS_PER_USER
-      });
-    }
 
     // 🎯 PREMIUM PRICE SLOT SYSTEM - Dinamik narx
     const priceSlotIndex = getAvailablePremiumPriceSlot(months);
@@ -3536,18 +3487,6 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
 
-    // 🛡️ Pending orders limit tekshiruvi
-    const pendingCount = await checkUserPendingOrders(ownerUserId);
-    if (pendingCount >= MAX_PENDING_ORDERS_PER_USER) {
-      console.log(`⚠️ User ${ownerUserId} da ${pendingCount} ta pending order mavjud (max: ${MAX_PENDING_ORDERS_PER_USER})`);
-      return res.status(429).json({
-        error: `Sizda ${pendingCount} ta faol buyurtma mavjud. Avval ularni yakunlang yoki vaqt tugashini kuting.`,
-        code: "MAX_PENDING_ORDERS",
-        pendingCount: pendingCount,
-        maxAllowed: MAX_PENDING_ORDERS_PER_USER
-      });
-    }
-
     // 🎯 GIFT PRICE SLOT SYSTEM - Dinamik narx
     const priceSlotIndex = getAvailableGiftPriceSlot(serverStars);
     
@@ -4027,18 +3966,6 @@ app.post("/api/v2/order/create", orderLimiter, telegramAuth, async (req, res) =>
     // Telegram user ma'lumotlari
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
-    
-    // 🛡️ Pending orders limit tekshiruvi
-    const pendingCount = await checkUserPendingOrders(ownerUserId);
-    if (pendingCount >= MAX_PENDING_ORDERS_PER_USER) {
-      console.log(`⚠️ User ${ownerUserId} da ${pendingCount} ta pending order mavjud (max: ${MAX_PENDING_ORDERS_PER_USER})`);
-      return res.status(429).json({
-        error: `Sizda ${pendingCount} ta faol buyurtma mavjud. Avval ularni yakunlang yoki vaqt tugashini kuting.`,
-        code: "MAX_PENDING_ORDERS",
-        pendingCount: pendingCount,
-        maxAllowed: MAX_PENDING_ORDERS_PER_USER
-      });
-    }
     
     // Validatsiya
     if (!order_type || !['stars', 'premium', 'gift'].includes(order_type)) {
