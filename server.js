@@ -92,6 +92,32 @@ app.use('/api/admin/', adminLimiter);
 
 // Barcha API larga umumiy rate limit
 app.use('/api/', generalLimiter);
+
+// ======================
+// 🛡️ USER PENDING ORDERS LIMIT - Bir user uchun max 5 ta pending order
+// ======================
+const MAX_PENDING_ORDERS_PER_USER = 5;
+const PENDING_ORDER_WINDOW_MS = 5 * 60 * 1000; // 5 daqiqa
+
+async function checkUserPendingOrders(userId) {
+  if (!userId) return 0;
+  
+  try {
+    const result = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM orders 
+      WHERE owner_user_id = $1 
+        AND status IN ('pending', 'payment_info', 'payment_received')
+        AND created_at > NOW() - INTERVAL '5 minutes'
+    `, [String(userId)]);
+    
+    return parseInt(result.rows[0].count) || 0;
+  } catch (err) {
+    console.error("❌ Pending orders check error:", err);
+    return 0; // Xatolik bo'lsa, cheklashmaslik
+  }
+}
+
 // ======================
 // 🛡️ SECURITY: Telegram WebApp initData validatsiya
 // ======================
@@ -238,11 +264,23 @@ if (!STARS_PRICE_PER_UNIT || STARS_PRICE_PER_UNIT <= 0) {
 console.log(`💰 Stars narxi: 1⭐ = ${STARS_PRICE_PER_UNIT} UZS`);
 
 // ======================
-// 🎯 PRICE SLOT SYSTEM - Dinamik narx tizimi
+// 🎯 PRICE SLOT SYSTEM - Dinamik narx tizimi (Chiroyli narxlar)
 // ======================
+// 50 stars uchun narxlar:
+// ┌─────────────────────────────────────────────────────────────────┐
+// │ Birinchi 10 slot (round narxlar):                               │
+// │ Slot 0:  12,000 | Slot 1:  11,900 | Slot 2:  11,800 | Slot 3:  11,700 │
+// │ Slot 4:  11,600 | Slot 5:  11,500 | Slot 6:  11,400 | Slot 7:  11,300 │
+// │ Slot 8:  11,200 | Slot 9:  11,100                                │
+// ├─────────────────────────────────────────────────────────────────┤
+// │ Ikkinchi 10 slot (50 so'm offset):                              │
+// │ Slot 10: 11,950 | Slot 11: 11,850 | Slot 12: 11,750 | Slot 13: 11,650 │
+// │ Slot 14: 11,550 | Slot 15: 11,450 | Slot 16: 11,350 | Slot 17: 11,250 │
+// │ Slot 18: 11,150 | Slot 19: 11,050                                │
+// └─────────────────────────────────────────────────────────────────┘
+// 100 stars: 24,000 → 23,100 (slot 0-9), 23,950 → 23,050 (slot 10-19)
 const PRICE_SLOT_CONFIG = {
-  MAX_SLOTS: 20,           // Maksimum parallel orderlar
-  PRICE_STEP: 50,          // Har bir slot uchun narx pasayishi (so'm)
+  MAX_SLOTS: 20,           // Maksimum parallel orderlar (0-19)
   SLOT_TIMEOUT: 5 * 60 * 1000, // 5 daqiqa (ms)
 };
 
@@ -310,11 +348,21 @@ function releasePriceSlotByOrderId(orderId) {
   return false;
 }
 
-// Calculate price for a slot
+// Calculate price for a slot - CHIROYLI NARX TIZIMI
+// Birinchi 10 slot (0-9): round narxlar (100 so'm step)
+// Ikkinchi 10 slot (10-19): 50 so'm offset bilan (100 so'm step)
 function calculateSlotPrice(starsAmount, slotIndex) {
   const basePrice = starsAmount * STARS_PRICE_PER_UNIT;
-  const discount = slotIndex * PRICE_SLOT_CONFIG.PRICE_STEP;
-  return basePrice - discount;
+  
+  if (slotIndex < 10) {
+    // Birinchi 10 slot: 12000, 11900, 11800, 11700... 11100
+    // Formula: basePrice - (slotIndex * 100)
+    return basePrice - (slotIndex * 100);
+  } else {
+    // Ikkinchi 10 slot: 11950, 11850, 11750, 11650... 11050
+    // Formula: basePrice - 50 - ((slotIndex - 10) * 100)
+    return basePrice - 50 - ((slotIndex - 10) * 100);
+  }
 }
 
 // Get current slot info for debugging
@@ -330,6 +378,224 @@ function getPriceSlotsInfo(starsAmount) {
     totalSlots: PRICE_SLOT_CONFIG.MAX_SLOTS,
     usedSlots: usedSlots,
     availableSlots: PRICE_SLOT_CONFIG.MAX_SLOTS - usedSlots,
+    slots: slots
+  };
+}
+
+// ======================
+// 🎯 PREMIUM PRICE SLOT SYSTEM - Dinamik narx tizimi (Chiroyli narxlar)
+// ======================
+// 3 oy uchun narxlar (masalan, base: 90,000):
+// ┌─────────────────────────────────────────────────────────────────┐
+// │ Birinchi 10 slot (round narxlar):                               │
+// │ Slot 0:  90,000 | Slot 1:  89,900 | Slot 2:  89,800 | Slot 3:  89,700 │
+// │ Slot 4:  89,600 | Slot 5:  89,500 | Slot 6:  89,400 | Slot 7:  89,300 │
+// │ Slot 8:  89,200 | Slot 9:  89,100                                │
+// ├─────────────────────────────────────────────────────────────────┤
+// │ Ikkinchi 10 slot (50 so'm offset):                              │
+// │ Slot 10: 89,950 | Slot 11: 89,850 | Slot 12: 89,750 | Slot 13: 89,650 │
+// │ Slot 14: 89,550 | Slot 15: 89,450 | Slot 16: 89,350 | Slot 17: 89,250 │
+// │ Slot 18: 89,150 | Slot 19: 89,050                                │
+// └─────────────────────────────────────────────────────────────────┘
+
+// In-memory premium price slot tracker: { months: { slotIndex: { orderId, createdAt } } }
+const premiumPriceSlots = {};
+
+// Get available premium price slot for a month duration
+function getAvailablePremiumPriceSlot(months) {
+  const now = Date.now();
+  
+  // Initialize if not exists
+  if (!premiumPriceSlots[months]) {
+    premiumPriceSlots[months] = {};
+  }
+  
+  const slots = premiumPriceSlots[months];
+  
+  // Clean up expired slots
+  for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+    if (slots[i]) {
+      const elapsed = now - slots[i].createdAt;
+      if (elapsed > PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
+        console.log(`🧹 Premium Slot ${i} tozalandi (expired): months=${months}`);
+        delete slots[i];
+      }
+    }
+  }
+  
+  // Find first available slot (0-indexed)
+  for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+    if (!slots[i]) {
+      return i;
+    }
+  }
+  
+  // All slots are taken
+  return -1;
+}
+
+// Reserve a premium price slot
+function reservePremiumPriceSlot(months, slotIndex, orderId) {
+  if (!premiumPriceSlots[months]) {
+    premiumPriceSlots[months] = {};
+  }
+  
+  premiumPriceSlots[months][slotIndex] = {
+    orderId: orderId,
+    createdAt: Date.now()
+  };
+  
+  console.log(`🎯 Premium Slot ${slotIndex} rezerv qilindi: months=${months}, orderId=${orderId}`);
+}
+
+// Release a premium price slot by orderId
+function releasePremiumPriceSlotByOrderId(orderId) {
+  for (const months in premiumPriceSlots) {
+    for (const slotIndex in premiumPriceSlots[months]) {
+      if (premiumPriceSlots[months][slotIndex].orderId === orderId) {
+        console.log(`🔓 Premium Slot ${slotIndex} bo'shatildi: months=${months}, orderId=${orderId}`);
+        delete premiumPriceSlots[months][slotIndex];
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Calculate premium price for a slot - CHIROYLI NARX TIZIMI
+// Birinchi 10 slot (0-9): round narxlar (100 so'm step)
+// Ikkinchi 10 slot (10-19): 50 so'm offset bilan (100 so'm step)
+function calculatePremiumSlotPrice(months, slotIndex) {
+  const priceMap = { 3: PREMIUM_3, 6: PREMIUM_6, 12: PREMIUM_12 };
+  const basePrice = priceMap[months] || 0;
+  
+  if (slotIndex < 10) {
+    // Birinchi 10 slot: base, base-100, base-200... base-900
+    return basePrice - (slotIndex * 100);
+  } else {
+    // Ikkinchi 10 slot: base-50, base-150, base-250... base-950
+    return basePrice - 50 - ((slotIndex - 10) * 100);
+  }
+}
+
+// Get current premium slot info for debugging
+function getPremiumPriceSlotsInfo(months) {
+  if (!premiumPriceSlots[months]) {
+    return { totalSlots: PRICE_SLOT_CONFIG.MAX_SLOTS, usedSlots: 0, slots: {} };
+  }
+  
+  const slots = premiumPriceSlots[months];
+  const usedSlots = Object.keys(slots).length;
+  
+  return {
+    totalSlots: PRICE_SLOT_CONFIG.MAX_SLOTS,
+    usedSlots: usedSlots,
+    availableSlots: PRICE_SLOT_CONFIG.MAX_SLOTS - usedSlots,
+    slots: slots
+  };
+}
+
+// ======================
+// 🎁 GIFT PRICE SLOT SYSTEM - Dinamik narx tizimi (Chiroyli narxlar)
+// ======================
+// 10 ta slot, har biri 20 so'm farq bilan
+// Masalan, 50 stars gift = 11,000 so'm base:
+// ┌─────────────────────────────────────────────────────────────────┐
+// │ Slot 0: 11,000 | Slot 1: 10,980 | Slot 2: 10,960 | Slot 3: 10,940 │
+// │ Slot 4: 10,920 | Slot 5: 10,900 | Slot 6: 10,880 | Slot 7: 10,860 │
+// │ Slot 8: 10,840 | Slot 9: 10,820                                  │
+// └─────────────────────────────────────────────────────────────────┘
+const GIFT_SLOT_CONFIG = {
+  MAX_SLOTS: 10,           // Maksimum parallel gift orderlar (0-9)
+  PRICE_STEP: 20,          // Har bir slot uchun 20 so'm farq
+  SLOT_TIMEOUT: 5 * 60 * 1000, // 5 daqiqa (ms)
+};
+
+// In-memory gift price slot tracker: { giftStars: { slotIndex: { orderId, createdAt } } }
+const giftPriceSlots = {};
+
+// Get available gift price slot for a gift stars amount
+function getAvailableGiftPriceSlot(giftStars) {
+  const now = Date.now();
+  
+  // Initialize if not exists
+  if (!giftPriceSlots[giftStars]) {
+    giftPriceSlots[giftStars] = {};
+  }
+  
+  const slots = giftPriceSlots[giftStars];
+  
+  // Clean up expired slots
+  for (let i = 0; i < GIFT_SLOT_CONFIG.MAX_SLOTS; i++) {
+    if (slots[i]) {
+      const elapsed = now - slots[i].createdAt;
+      if (elapsed > GIFT_SLOT_CONFIG.SLOT_TIMEOUT) {
+        console.log(`🧹 Gift Slot ${i} tozalandi (expired): stars=${giftStars}`);
+        delete slots[i];
+      }
+    }
+  }
+  
+  // Find first available slot (0-indexed)
+  for (let i = 0; i < GIFT_SLOT_CONFIG.MAX_SLOTS; i++) {
+    if (!slots[i]) {
+      return i;
+    }
+  }
+  
+  // All slots are taken
+  return -1;
+}
+
+// Reserve a gift price slot
+function reserveGiftPriceSlot(giftStars, slotIndex, orderId) {
+  if (!giftPriceSlots[giftStars]) {
+    giftPriceSlots[giftStars] = {};
+  }
+  
+  giftPriceSlots[giftStars][slotIndex] = {
+    orderId: orderId,
+    createdAt: Date.now()
+  };
+  
+  console.log(`🎯 Gift Slot ${slotIndex} rezerv qilindi: stars=${giftStars}, orderId=${orderId}`);
+}
+
+// Release a gift price slot by orderId
+function releaseGiftPriceSlotByOrderId(orderId) {
+  for (const giftStars in giftPriceSlots) {
+    for (const slotIndex in giftPriceSlots[giftStars]) {
+      if (giftPriceSlots[giftStars][slotIndex].orderId === orderId) {
+        console.log(`🔓 Gift Slot ${slotIndex} bo'shatildi: stars=${giftStars}, orderId=${orderId}`);
+        delete giftPriceSlots[giftStars][slotIndex];
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Calculate gift price for a slot - CHIROYLI NARX TIZIMI
+// 10 ta slot, har biri 20 so'm farq bilan
+// Formula: basePrice - (slotIndex * 20)
+function calculateGiftSlotPrice(giftStars, slotIndex) {
+  const basePrice = GIFT_PRICE_MAP[giftStars] || 0;
+  return basePrice - (slotIndex * GIFT_SLOT_CONFIG.PRICE_STEP);
+}
+
+// Get current gift slot info for debugging
+function getGiftPriceSlotsInfo(giftStars) {
+  if (!giftPriceSlots[giftStars]) {
+    return { totalSlots: GIFT_SLOT_CONFIG.MAX_SLOTS, usedSlots: 0, slots: {} };
+  }
+  
+  const slots = giftPriceSlots[giftStars];
+  const usedSlots = Object.keys(slots).length;
+  
+  return {
+    totalSlots: GIFT_SLOT_CONFIG.MAX_SLOTS,
+    usedSlots: usedSlots,
+    availableSlots: GIFT_SLOT_CONFIG.MAX_SLOTS - usedSlots,
     slots: slots
   };
 }
@@ -1186,6 +1452,18 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
 
+    // 🛡️ Pending orders limit tekshiruvi
+    const pendingCount = await checkUserPendingOrders(ownerUserId);
+    if (pendingCount >= MAX_PENDING_ORDERS_PER_USER) {
+      console.log(`⚠️ User ${ownerUserId} da ${pendingCount} ta pending order mavjud (max: ${MAX_PENDING_ORDERS_PER_USER})`);
+      return res.status(429).json({
+        error: `Sizda ${pendingCount} ta faol buyurtma mavjud. Avval ularni yakunlang yoki vaqt tugashini kuting.`,
+        code: "MAX_PENDING_ORDERS",
+        pendingCount: pendingCount,
+        maxAllowed: MAX_PENDING_ORDERS_PER_USER
+      });
+    }
+
     // 🎯 PRICE SLOT SYSTEM - Dinamik narx
     const priceSlotIndex = getAvailablePriceSlot(starsNum);
     
@@ -1770,8 +2048,34 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
 
-    // 🔐 Unique summ generatsiya
-    console.log("🔄 Takrorlanmas unique summ yaratilyapti...");
+    // 🛡️ Pending orders limit tekshiruvi
+    const pendingCount = await checkUserPendingOrders(ownerUserId);
+    if (pendingCount >= MAX_PENDING_ORDERS_PER_USER) {
+      console.log(`⚠️ User ${ownerUserId} da ${pendingCount} ta pending order mavjud (max: ${MAX_PENDING_ORDERS_PER_USER})`);
+      return res.status(429).json({
+        error: `Sizda ${pendingCount} ta faol buyurtma mavjud. Avval ularni yakunlang yoki vaqt tugashini kuting.`,
+        code: "MAX_PENDING_ORDERS",
+        pendingCount: pendingCount,
+        maxAllowed: MAX_PENDING_ORDERS_PER_USER
+      });
+    }
+
+    // 🎯 PREMIUM PRICE SLOT SYSTEM - Dinamik narx
+    const priceSlotIndex = getAvailablePremiumPriceSlot(months);
+    
+    if (priceSlotIndex === -1) {
+      // Barcha slotlar band
+      console.log(`⚠️ Barcha premium slotlar band: months=${months}`);
+      return res.status(503).json({
+        error: "Hozirda juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
+        code: "SLOTS_FULL"
+      });
+    }
+
+    // Slot-based narxni hisoblash
+    const slotBasedPrice = calculatePremiumSlotPrice(months, priceSlotIndex);
+    console.log(`🎯 Premium Slot ${priceSlotIndex}: ${months} oy = ${slotBasedPrice} so'm (base: ${baseAmount})`);
+
     const client = await pool.connect();
     let order;
     
@@ -1779,10 +2083,9 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(1002)');
       
-      const uniqueSum = await generateUniqueOrderSum(baseAmount, client);
       const orderId = crypto.randomUUID();
       
-      console.log("✅ Unique summ topildi:", uniqueSum);
+      console.log("✅ Slot-based narx:", slotBasedPrice);
       console.log("📝 Bazaga yozilmoqda...");
 
       // 🟦 YANGI orders jadvaliga yozish
@@ -1790,11 +2093,14 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
         `INSERT INTO orders (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, created_at)
          VALUES ($1, $2, $3, $4, 'premium', $5, $6, 'card', 'pending', 'pending', NOW())
          RETURNING *`,
-        [orderId, ownerUserId, clean, recipient, months, uniqueSum]
+        [orderId, ownerUserId, clean, recipient, months, slotBasedPrice]
       );
       
       await client.query('COMMIT');
       order = result.rows[0];
+      
+      // 🎯 Slotni rezerv qilish - order yaratilgandan keyin
+      reservePremiumPriceSlot(months, priceSlotIndex, order.id);
       
     } catch (err) {
       await client.query('ROLLBACK');
@@ -1813,7 +2119,7 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
     } catch (e) {
       console.log('⚠️ Balance checker ga ulanib bo\'lmadi');
     }
-    // 20 daqiqadan keyin expired
+    // 5 daqiqadan keyin expired (frontend bilan sync)
     setTimeout(async () => {
       try {
         const check = await pool.query(
@@ -1825,12 +2131,16 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
             "UPDATE orders SET status='expired', payment_status='expired' WHERE id=$1",
             [order.id]
           );
+          
+          // 🎯 Slotni bo'shatish
+          releasePremiumPriceSlotByOrderId(order.id);
+          
           console.log(`⏰ Premium Order #${order.id} expired`);
         }
       } catch (e) {
         console.error("❌ Premium Expiry tekshirishda xato:", e);
       }
-    }, 20 * 60 * 1000);
+    }, 5 * 60 * 1000);
     // Backward compatible response
     return res.json({ 
       success: true, 
@@ -1957,6 +2267,10 @@ async function sendPremiumToUser(orderId, recipientId, months) {
         "UPDATE orders SET status='completed', transaction_id=$1 WHERE id=$2",
         [data.transaction_id, orderId]
       );
+      
+      // 🎯 Slotni bo'shatish
+      releasePremiumPriceSlotByOrderId(orderId);
+      
       // 📢 Kanalga xabar
       sendChannelNotification(orderId, 'premium').catch(err => console.error("Notification error:", err));
       return { status: "completed", transaction_id: data.transaction_id };
@@ -1966,6 +2280,10 @@ async function sendPremiumToUser(orderId, recipientId, months) {
       "UPDATE orders SET status='failed' WHERE id=$1",
       [orderId]
     );
+    
+    // 🎯 Slotni bo'shatish
+    releasePremiumPriceSlotByOrderId(orderId);
+    
     return { status: "failed", reason: data.error || "unknown" };
   } catch (err) {
     console.log("💥 PREMIUM SEND ERROR:", err);
@@ -1973,6 +2291,10 @@ async function sendPremiumToUser(orderId, recipientId, months) {
       "UPDATE orders SET status='error' WHERE id=$1",
       [orderId]
     );
+    
+    // 🎯 Slotni bo'shatish
+    releasePremiumPriceSlotByOrderId(orderId);
+    
     return { status: "error", reason: err.message };
   }
 }
@@ -3209,22 +3531,49 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
     if (comment && comment.length > 128) {
       return res.status(400).json({ error: "Izoh 128 belgidan oshmasligi kerak" });
     }
-    const cleanUsername = recipientUsername.startsWith("@")
-      ? recipientUsername.slice(1)
-      : recipientUsername;
 
     // Telegram user_id olish
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
 
-    // Unique summ (orders jadvaliga yozamiz)
+    // 🛡️ Pending orders limit tekshiruvi
+    const pendingCount = await checkUserPendingOrders(ownerUserId);
+    if (pendingCount >= MAX_PENDING_ORDERS_PER_USER) {
+      console.log(`⚠️ User ${ownerUserId} da ${pendingCount} ta pending order mavjud (max: ${MAX_PENDING_ORDERS_PER_USER})`);
+      return res.status(429).json({
+        error: `Sizda ${pendingCount} ta faol buyurtma mavjud. Avval ularni yakunlang yoki vaqt tugashini kuting.`,
+        code: "MAX_PENDING_ORDERS",
+        pendingCount: pendingCount,
+        maxAllowed: MAX_PENDING_ORDERS_PER_USER
+      });
+    }
+
+    // 🎯 GIFT PRICE SLOT SYSTEM - Dinamik narx
+    const priceSlotIndex = getAvailableGiftPriceSlot(serverStars);
+    
+    if (priceSlotIndex === -1) {
+      // Barcha slotlar band
+      console.log(`⚠️ Barcha gift slotlar band: stars=${serverStars}`);
+      return res.status(503).json({
+        error: "Hozirda juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
+        code: "SLOTS_FULL"
+      });
+    }
+
+    // Slot-based narxni hisoblash
+    const slotBasedPrice = calculateGiftSlotPrice(serverStars, priceSlotIndex);
+    console.log(`🎯 Gift Slot ${priceSlotIndex}: ${serverStars} stars = ${slotBasedPrice} so'm (base: ${amount})`);
+
+    const cleanUsername = recipientUsername.startsWith("@")
+      ? recipientUsername.slice(1)
+      : recipientUsername;
+
+    // Order yaratish (orders jadvaliga yozamiz)
     const client = await pool.connect();
     let order;
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(1002)');
-      
-      const uniqueSum = await generateUniqueOrderSum(amount, client);
       
       const orderId = crypto.randomUUID();
       const result = await client.query(
@@ -3238,7 +3587,7 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
           tgUser?.username || 'unknown',
           cleanUsername,
           serverStars,
-          uniqueSum,
+          slotBasedPrice,
           giftId,
           anonymous === true,
           comment && comment.trim() ? comment.trim() : null,
@@ -3246,6 +3595,10 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
       );
       await client.query('COMMIT');
       order = result.rows[0];
+      
+      // 🎯 Slotni rezerv qilish - order yaratilgandan keyin
+      reserveGiftPriceSlot(serverStars, priceSlotIndex, order.id);
+      
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -3277,6 +3630,10 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
             "UPDATE orders SET status='expired', payment_status='expired' WHERE id=$1",
             [order.id]
           );
+          
+          // 🎯 Slotni bo'shatish
+          releaseGiftPriceSlotByOrderId(order.id);
+          
           console.log(`⏰ Gift Order #${order.id} expired`);
         }
       } catch (e) {
@@ -3420,6 +3777,7 @@ async function sendGiftToUser(order) {
         "UPDATE orders SET status = 'error' WHERE id = $1",
         [order.id]
       );
+      releaseGiftPriceSlotByOrderId(order.id);
       throw new Error(giftData.error || "Gift yuborishda xato");
     }
     // Muvaffaqiyatli — statusni yangilash
@@ -3427,6 +3785,7 @@ async function sendGiftToUser(order) {
       "UPDATE orders SET status = 'completed' WHERE id = $1",
       [order.id]
     );
+    releaseGiftPriceSlotByOrderId(order.id);
     console.log(`✅ Gift muvaffaqiyatli yuborildi: #${order.id} → @${order.recipient}`);
     // 📢 Kanalga xabar
     sendUnifiedChannelNotification(order, 'gift').catch(err => console.error("Gift notification error:", err));
@@ -3437,6 +3796,7 @@ async function sendGiftToUser(order) {
       "UPDATE orders SET status = 'error' WHERE id = $1",
       [order.id]
     );
+    releaseGiftPriceSlotByOrderId(order.id);
     throw err;
   }
 }
@@ -3667,6 +4027,18 @@ app.post("/api/v2/order/create", orderLimiter, telegramAuth, async (req, res) =>
     // Telegram user ma'lumotlari
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
+    
+    // 🛡️ Pending orders limit tekshiruvi
+    const pendingCount = await checkUserPendingOrders(ownerUserId);
+    if (pendingCount >= MAX_PENDING_ORDERS_PER_USER) {
+      console.log(`⚠️ User ${ownerUserId} da ${pendingCount} ta pending order mavjud (max: ${MAX_PENDING_ORDERS_PER_USER})`);
+      return res.status(429).json({
+        error: `Sizda ${pendingCount} ta faol buyurtma mavjud. Avval ularni yakunlang yoki vaqt tugashini kuting.`,
+        code: "MAX_PENDING_ORDERS",
+        pendingCount: pendingCount,
+        maxAllowed: MAX_PENDING_ORDERS_PER_USER
+      });
+    }
     
     // Validatsiya
     if (!order_type || !['stars', 'premium', 'gift'].includes(order_type)) {
@@ -4008,6 +4380,8 @@ async function deliverPremiumOrder(order) {
       "UPDATE orders SET status = 'failed' WHERE id = $1",
       [order.id]
     );
+    // 🎯 Slotni bo'shatish - failed
+    releasePremiumPriceSlotByOrderId(order.id);
     throw new Error("Premium yuborishda xato: " + JSON.stringify(data));
   }
   
@@ -4016,6 +4390,9 @@ async function deliverPremiumOrder(order) {
     "UPDATE orders SET status = 'delivered', transaction_id = $1 WHERE id = $2",
     [data.transaction_id, order.id]
   );
+  
+  // 🎯 Slotni bo'shatish - completed
+  releasePremiumPriceSlotByOrderId(order.id);
   
   console.log(`✅ Premium yuborildi: Order #${order.id} -> TxID: ${data.transaction_id}`);
   
@@ -4068,6 +4445,8 @@ async function deliverGiftOrder(order) {
       "UPDATE orders SET status = 'failed' WHERE id = $1",
       [order.id]
     );
+    // 🎯 Slotni bo'shatish - failed
+    releaseGiftPriceSlotByOrderId(order.id);
     throw new Error("Gift yuborishda xato: " + JSON.stringify(data));
   }
   
@@ -4076,6 +4455,9 @@ async function deliverGiftOrder(order) {
     "UPDATE orders SET status = 'delivered', transaction_id = $1 WHERE id = $2",
     [data.transaction_id, order.id]
   );
+  
+  // 🎯 Slotni bo'shatish - completed
+  releaseGiftPriceSlotByOrderId(order.id);
   
   console.log(`✅ Gift yuborildi: Order #${order.id} -> TxID: ${data.transaction_id}`);
   
