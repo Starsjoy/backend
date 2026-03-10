@@ -673,15 +673,18 @@ app.get("/api/referral/leaderboard", telegramAuth, async (req, res) => {
   try {
     const { user_id, period } = req.query;
     
-    // Period filter: daily, weekly, monthly, all (default)
+    // Period filter: daily (bugun), weekly (7 kun orqaga), monthly (30 kun orqaga)
     // Do'stning ro'yxatdan o'tgan sanasi (created_at) bo'yicha filter
     let dateFilter = "";
     if (period === "daily") {
-      dateFilter = "AND u1.created_at >= NOW() - INTERVAL '1 day'";
+      // Bugun: 00:00:00 dan 23:59:59 gacha
+      dateFilter = "AND u1.created_at >= CURRENT_DATE AND u1.created_at < CURRENT_DATE + INTERVAL '1 day'";
     } else if (period === "weekly") {
-      dateFilter = "AND u1.created_at >= NOW() - INTERVAL '7 days'";
+      // Bugundan 7 kun orqaga
+      dateFilter = "AND u1.created_at >= CURRENT_DATE - INTERVAL '6 days'";
     } else if (period === "monthly") {
-      dateFilter = "AND u1.created_at >= NOW() - INTERVAL '30 days'";
+      // Bugundan 30 kun orqaga
+      dateFilter = "AND u1.created_at >= CURRENT_DATE - INTERVAL '29 days'";
     }
     
     // Top 10 users by referral count (faqat kanalga obuna bo'lgan do'stlarni sanash)
@@ -2024,14 +2027,17 @@ app.get("/api/stats/leaderboard", telegramAuth, async (req, res) => {
       }
     }
 
-    // Period filter: daily, weekly, monthly, all (default)
+    // Period filter: daily (bugun), weekly (7 kun orqaga), monthly (30 kun orqaga)
     let dateFilter = "";
     if (period === "daily") {
-      dateFilter = "AND o.created_at >= NOW() - INTERVAL '1 day'";
+      // Bugun: 00:00:00 dan 23:59:59 gacha
+      dateFilter = "AND o.created_at >= CURRENT_DATE AND o.created_at < CURRENT_DATE + INTERVAL '1 day'";
     } else if (period === "weekly") {
-      dateFilter = "AND o.created_at >= NOW() - INTERVAL '7 days'";
+      // Bugundan 7 kun orqaga
+      dateFilter = "AND o.created_at >= CURRENT_DATE - INTERVAL '6 days'";
     } else if (period === "monthly") {
-      dateFilter = "AND o.created_at >= NOW() - INTERVAL '30 days'";
+      // Bugundan 30 kun orqaga
+      dateFilter = "AND o.created_at >= CURRENT_DATE - INTERVAL '29 days'";
     }
     const query = `
       WITH order_totals AS (

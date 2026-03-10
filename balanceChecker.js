@@ -383,25 +383,41 @@ app.get('/api/userbot/stars-balance', async (req, res) => {
         // payments.getStarsStatus API
         const result = await client.invoke(
             new Api.payments.GetStarsStatus({
-                peer: new Api.InputPeerSelf()
+                peer: "me"
             })
         );
 
-        console.log(`📊 GetStarsStatus full response:`, result);
-        console.log(`📊 Result keys:`, Object.keys(result || {}));
-        console.log(`📊 result.balance type:`, typeof result?.balance);
-        console.log(`📊 result.balance value:`, result?.balance);
+        console.log(`📊 Balance object:`, result.balance);
+        console.log(`📊 Balance type:`, typeof result.balance);
+        console.log(`📊 Balance keys:`, result.balance ? Object.keys(result.balance) : "null");
 
-        // ⭐ XATOLIK: result.balance object bo'lib, amount field ichida raqam bor
-        const starsBalance = Number(result.balance?.amount?.value || 0);
+        // Balance ni olish
+        let balance;
+        if (result.balance && typeof result.balance === 'object') {
+            // StarsAmount obyekti bo'lsa
+            balance = result.balance.amount || result.balance.value || result.balance;
+        } else {
+            balance = result.balance;
+        }
+        
+        // BigInt yoki Number ga aylantirish
+        if (typeof balance === 'bigint') {
+            balance = Number(balance);
+        } else if (typeof balance === 'object' && balance?.value) {
+            // Integer { value: 165n } formatida bo'lsa
+            balance = Number(balance.value);
+        } else if (typeof balance === 'object') {
+            balance = 0;
+        } else {
+            balance = Number(balance) || 0;
+        }
 
-        console.log(`⭐ Stars balance (correct): ${starsBalance}`);
+        console.log(`⭐ Stars balance (final): ${balance}`);
 
         res.json({
             success: true,
-            stars_balance: starsBalance,
-            subscriptions: result.subscriptions || [],
-            raw_response: result  // Debug uchun
+            stars_balance: balance,
+            subscriptions: result.subscriptions || []
         });
 
     } catch (err) {
