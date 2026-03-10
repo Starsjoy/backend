@@ -239,9 +239,9 @@ if (!STARS_PRICE_PER_UNIT || STARS_PRICE_PER_UNIT <= 0) {
 console.log(`💰 Stars narxi: 1⭐ = ${STARS_PRICE_PER_UNIT} UZS`);
 
 // ======================
-// 🎯 PRICE SLOT SYSTEM - Dinamik narx tizimi (Chiroyli narxlar)
+// 🎯 PRICE SLOT SYSTEM - Dinamik narx tizimi (FIXED 12,000 so'm max)
 // ======================
-// 50 stars uchun narxlar:
+// Barcha Stars buyurtmalari uchun FIXED narx tizimi:
 // ┌─────────────────────────────────────────────────────────────────┐
 // │ Birinchi 10 slot (round narxlar):                               │
 // │ Slot 0:  12,000 | Slot 1:  11,900 | Slot 2:  11,800 | Slot 3:  11,700 │
@@ -253,7 +253,6 @@ console.log(`💰 Stars narxi: 1⭐ = ${STARS_PRICE_PER_UNIT} UZS`);
 // │ Slot 14: 11,550 | Slot 15: 11,450 | Slot 16: 11,350 | Slot 17: 11,250 │
 // │ Slot 18: 11,150 | Slot 19: 11,050                                │
 // └─────────────────────────────────────────────────────────────────┘
-// 100 stars: 24,000 → 23,100 (slot 0-9), 23,950 → 23,050 (slot 10-19)
 const PRICE_SLOT_CONFIG = {
   MAX_SLOTS: 20,           // Maksimum parallel orderlar (0-19)
   SLOT_TIMEOUT: 5 * 60 * 1000, // 5 daqiqa (ms)
@@ -324,19 +323,20 @@ function releasePriceSlotByOrderId(orderId) {
 }
 
 // Calculate price for a slot - CHIROYLI NARX TIZIMI
+// Maksimum narx: 12,000 so'm (barcha stars miqdorlari uchun)
 // Birinchi 10 slot (0-9): round narxlar (100 so'm step)
 // Ikkinchi 10 slot (10-19): 50 so'm offset bilan (100 so'm step)
 function calculateSlotPrice(starsAmount, slotIndex) {
-  const basePrice = starsAmount * STARS_PRICE_PER_UNIT;
+  const MAX_PRICE = 12000; // Asosiy narx 12,000 dan oshmasin
   
   if (slotIndex < 10) {
     // Birinchi 10 slot: 12000, 11900, 11800, 11700... 11100
-    // Formula: basePrice - (slotIndex * 100)
-    return basePrice - (slotIndex * 100);
+    // Formula: MAX_PRICE - (slotIndex * 100)
+    return MAX_PRICE - (slotIndex * 100);
   } else {
     // Ikkinchi 10 slot: 11950, 11850, 11750, 11650... 11050
-    // Formula: basePrice - 50 - ((slotIndex - 10) * 100)
-    return basePrice - 50 - ((slotIndex - 10) * 100);
+    // Formula: MAX_PRICE - 50 - ((slotIndex - 10) * 100)
+    return MAX_PRICE - 50 - ((slotIndex - 10) * 100);
   }
 }
 
@@ -1216,8 +1216,8 @@ app.get("/api/stars/price/:stars", (req, res) => {
   }
   
   const price = calculateSlotPrice(stars, slotIndex);
-  const basePrice = stars * STARS_PRICE_PER_UNIT;
-  const discount = slotIndex * PRICE_SLOT_CONFIG.PRICE_STEP;
+  const basePrice = 12000; // Maksimum narx
+  const discount = basePrice - price;
   
   res.json({
     available: true,
