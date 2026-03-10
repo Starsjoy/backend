@@ -239,6 +239,87 @@ if (!STARS_PRICE_PER_UNIT || STARS_PRICE_PER_UNIT <= 0) {
 console.log(`💰 Stars narxi: 1⭐ = ${STARS_PRICE_PER_UNIT} UZS`);
 
 // ======================
+// 🛡️ GLOBAL PRICE CACHE - Barcha pending orderlar narxlari
+// ======================
+// In-memory cache - database query'larni kamaytirish uchun
+// { price: { orderId, createdAt, orderType } }
+const globalUsedPrices = new Map();
+
+// Server ishga tushganda pending orderlarni yuklash
+async function loadPendingOrdersToCache() {
+  try {
+    const result = await pool.query(
+      "SELECT id, summ, order_type, created_at FROM orders WHERE status = 'pending' AND payment_status = 'pending'"
+    );
+    
+    globalUsedPrices.clear();
+    
+    for (const order of result.rows) {
+      globalUsedPrices.set(order.summ, {
+        orderId: order.id,
+        orderType: order.order_type,
+        createdAt: new Date(order.created_at).getTime()
+      });
+    }
+    
+    console.log(`📦 Cache yuklandi: ${globalUsedPrices.size} ta pending order`);
+  } catch (err) {
+    console.error('❌ Pending orderlarni yuklashda xato:', err.message);
+  }
+}
+
+// Cache ga narx qo'shish
+function addPriceToCache(price, orderId, orderType) {
+  globalUsedPrices.set(price, {
+    orderId,
+    orderType,
+    createdAt: Date.now()
+  });
+}
+
+// Cache dan narx o'chirish
+function removePriceFromCache(price) {
+  globalUsedPrices.delete(price);
+}
+
+// Order ID bo'yicha cache dan o'chirish
+function removePriceFromCacheByOrderId(orderId) {
+  for (const [price, data] of globalUsedPrices.entries()) {
+    if (data.orderId === orderId) {
+      globalUsedPrices.delete(price);
+      return price;
+    }
+  }
+  return null;
+}
+
+// Narx band yoki yo'qligini tekshirish (O(1) tezlik)
+function isPriceUsed(price) {
+  return globalUsedPrices.has(price);
+}
+
+// Cache ni tozalash (expired orderlar) - har 1 daqiqada
+setInterval(async () => {
+  try {
+    // Bazadan haqiqiy pending orderlarni olish
+    const result = await pool.query(
+      "SELECT summ FROM orders WHERE status = 'pending' AND payment_status = 'pending'"
+    );
+    
+    const dbPrices = new Set(result.rows.map(r => r.summ));
+    
+    // Cache da bor lekin bazada yo'q narxlarni o'chirish
+    for (const [price] of globalUsedPrices.entries()) {
+      if (!dbPrices.has(price)) {
+        globalUsedPrices.delete(price);
+      }
+    }
+  } catch (err) {
+    // Silent fail - kritik emas
+  }
+}, 60 * 1000); // Har 1 daqiqa
+
+// ======================
 // 🎯 PRICE SLOT SYSTEM - Dinamik narx tizimi (Stars * NARX so'm)
 // ======================
 // Har bir Stars miqdori uchun alohida slot pool:
@@ -1641,17 +1722,40 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
       
       if (discountCheck.rows.length > 0) {
         discountPackage = discountCheck.rows[0];
-        discountSlotIndex = getAvailableDiscountPriceSlot(discountPackage.id);
+        
+        // 🛡️ Cache dan tekshirish (O(1) tezlik - database query yo'q!)
+        
+        // Collision-free slot topish
+        for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+          // Slot band bo'lsa, keyingisiga o'tish
+          if (discountPriceSlots[discountPackage.id] && discountPriceSlots[discountPackage.id][i]) {
+            const elapsed = Date.now() - discountPriceSlots[discountPackage.id][i].createdAt;
+            if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
+              continue;
+            }
+          }
+          
+          // Bu slot uchun narxni hisoblash
+          const potentialPrice = calculateDiscountSlotPrice(discountPackage.discounted_price, i);
+          
+          // Bu narx boshqa pending orderda bormi? (Cache - O(1))
+          if (!isPriceUsed(potentialPrice)) {
+            discountSlotIndex = i;
+            amount = potentialPrice;
+            break;
+          }
+          
+          console.log(`⚠️ Discount slot ${i} narxi (${potentialPrice}) boshqa pending orderda bor, keyingisiga o'tmoqda...`);
+        }
         
         if (discountSlotIndex === -1) {
-          console.log(`⚠️ Chegirma paketi slotlari band: packageId=${discountPackage.id}`);
+          console.log(`⚠️ Chegirma paketi slotlari band yoki collision: packageId=${discountPackage.id}`);
           return res.status(503).json({
             error: "Bu chegirma paketi uchun juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
             code: "SLOTS_FULL"
           });
         }
         
-        amount = calculateDiscountSlotPrice(discountPackage.discounted_price, discountSlotIndex);
         useDiscountSlot = true;
         console.log(`🏷️ Chegirma paketi: ${starsNum} stars, Slot ${discountSlotIndex} = ${amount} so'm (base: ${discountPackage.discounted_price})`);
       }
@@ -1661,19 +1765,40 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
     let priceSlotIndex = -1;
     
     if (!useDiscountSlot) {
-      priceSlotIndex = getAvailablePriceSlot(starsNum);
+      // 🛡️ Cache dan tekshirish (O(1) tezlik - database query yo'q!)
+      
+      // Collision-free slot topish
+      for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+        // Slot band bo'lsa, keyingisiga o'tish
+        if (priceSlots[String(starsNum)] && priceSlots[String(starsNum)][i]) {
+          const elapsed = Date.now() - priceSlots[String(starsNum)][i].createdAt;
+          if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
+            continue; // Slot hali band
+          }
+        }
+        
+        // Bu slot uchun narxni hisoblash
+        const potentialPrice = calculateSlotPrice(starsNum, i);
+        
+        // Bu narx boshqa pending orderda bormi? (Cache - O(1))
+        if (!isPriceUsed(potentialPrice)) {
+          priceSlotIndex = i;
+          amount = potentialPrice;
+          break;
+        }
+        
+        console.log(`⚠️ Stars slot ${i} narxi (${potentialPrice}) boshqa pending orderda bor, keyingisiga o'tmoqda...`);
+      }
       
       if (priceSlotIndex === -1) {
-        // Barcha slotlar band
-        console.log(`⚠️ Barcha slotlar band: stars=${starsNum}`);
+        // Barcha slotlar band yoki collision
+        console.log(`⚠️ Barcha slotlar band yoki collision: stars=${starsNum}`);
         return res.status(503).json({
           error: "Hozirda juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
           code: "SLOTS_FULL"
         });
       }
 
-      // Slot-based narxni hisoblash
-      amount = calculateSlotPrice(starsNum, priceSlotIndex);
       console.log(`🎯 Slot ${priceSlotIndex}: ${starsNum} stars = ${amount} so'm (base: ${starsNum * STARS_PRICE_PER_UNIT})`);
     }
 
@@ -1690,6 +1815,22 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
       
       // Slot-based narx - har bir slot unique narxga ega
       const uniqueSum = amount;
+      
+      // 🛡️ COLLISION CHECK - Transaction ichida qayta tekshirish
+      const collisionCheck = await client.query(
+        "SELECT id FROM orders WHERE summ = $1 AND status = 'pending' AND payment_status = 'pending' LIMIT 1",
+        [uniqueSum]
+      );
+      
+      if (collisionCheck.rows.length > 0) {
+        await client.query('ROLLBACK');
+        console.log(`⚠️ Stars: Collision aniqlandi transaction ichida: ${uniqueSum} so'm`);
+        return res.status(503).json({
+          error: "Narx to'qnashuvi. Iltimos, qayta urinib ko'ring.",
+          code: "PRICE_COLLISION"
+        });
+      }
+      
       const orderId = crypto.randomUUID();
       // 🟦 YANGI orders jadvaliga yozish
       const result = await client.query(
@@ -1708,6 +1849,9 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
       } else {
         reservePriceSlot(starsNum, priceSlotIndex, order.id);
       }
+      
+      // 🔄 Global cache ga qo'shish
+      addPriceToCache(order.summ, order.id, 'stars');
       
     } catch (err) {
       await client.query('ROLLBACK');
@@ -1745,6 +1889,9 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
           if (check.rows[0]?.order_type === 'stars') {
             releasePriceSlotByOrderId(order.id);
           }
+          
+          // 🔄 Cache dan o'chirish
+          removePriceFromCacheByOrderId(order.id);
           
           console.log(`⏰ Order #${order.id} expired`);
         }
@@ -1960,6 +2107,9 @@ async function sendStarsToUser(orderId, recipientId, stars) {
     
     // 🎯 Slotni bo'shatish - order completed
     releasePriceSlotByOrderId(orderId);
+    
+    // 🔄 Cache dan o'chirish
+    removePriceFromCacheByOrderId(orderId);
     
     console.log(`✅ Stars yuborildi: ${orderId} -> ${txId}`);
     // 📢 Kanalga xabar
@@ -2229,20 +2379,44 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
 
-    // 🎯 PREMIUM PRICE SLOT SYSTEM - Dinamik narx
-    const priceSlotIndex = getAvailablePremiumPriceSlot(months);
+    // 🎯 PREMIUM PRICE SLOT SYSTEM - Collision-free slot topish
+    let priceSlotIndex = -1;
+    let slotBasedPrice = 0;
+    
+    // 🛡️ Cache dan tekshirish (O(1) tezlik - database query yo'q!)
+    
+    // Collision-free slot topish
+    for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+      // Slot band bo'lsa, keyingisiga o'tish
+      if (premiumPriceSlots[months] && premiumPriceSlots[months][i]) {
+        const elapsed = Date.now() - premiumPriceSlots[months][i].createdAt;
+        if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
+          continue;
+        }
+      }
+      
+      // Bu slot uchun narxni hisoblash
+      const potentialPrice = calculatePremiumSlotPrice(months, i);
+      
+      // Bu narx boshqa pending orderda bormi? (Cache - O(1))
+      if (!isPriceUsed(potentialPrice)) {
+        priceSlotIndex = i;
+        slotBasedPrice = potentialPrice;
+        break;
+      }
+      
+      console.log(`⚠️ Premium slot ${i} narxi (${potentialPrice}) boshqa pending orderda bor, keyingisiga o'tmoqda...`);
+    }
     
     if (priceSlotIndex === -1) {
-      // Barcha slotlar band
-      console.log(`⚠️ Barcha premium slotlar band: months=${months}`);
+      // Barcha slotlar band yoki collision
+      console.log(`⚠️ Barcha premium slotlar band yoki collision: months=${months}`);
       return res.status(503).json({
         error: "Hozirda juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
         code: "SLOTS_FULL"
       });
     }
 
-    // Slot-based narxni hisoblash
-    const slotBasedPrice = calculatePremiumSlotPrice(months, priceSlotIndex);
     console.log(`🎯 Premium Slot ${priceSlotIndex}: ${months} oy = ${slotBasedPrice} so'm (base: ${baseAmount})`);
 
     const client = await pool.connect();
@@ -2251,6 +2425,21 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(1002)');
+      
+      // 🛡️ COLLISION CHECK - Transaction ichida qayta tekshirish
+      const collisionCheck = await client.query(
+        "SELECT id FROM orders WHERE summ = $1 AND status = 'pending' AND payment_status = 'pending' LIMIT 1",
+        [slotBasedPrice]
+      );
+      
+      if (collisionCheck.rows.length > 0) {
+        await client.query('ROLLBACK');
+        console.log(`⚠️ Premium: Collision aniqlandi transaction ichida: ${slotBasedPrice} so'm`);
+        return res.status(503).json({
+          error: "Narx to'qnashuvi. Iltimos, qayta urinib ko'ring.",
+          code: "PRICE_COLLISION"
+        });
+      }
       
       const orderId = crypto.randomUUID();
       
@@ -2270,6 +2459,9 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
       
       // 🎯 Slotni rezerv qilish - order yaratilgandan keyin
       reservePremiumPriceSlot(months, priceSlotIndex, order.id);
+      
+      // 🔄 Global cache ga qo'shish
+      addPriceToCache(order.summ, order.id, 'premium');
       
     } catch (err) {
       await client.query('ROLLBACK');
@@ -2303,6 +2495,9 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
           
           // 🎯 Slotni bo'shatish
           releasePremiumPriceSlotByOrderId(order.id);
+          
+          // 🔄 Cache dan o'chirish
+          removePriceFromCacheByOrderId(order.id);
           
           console.log(`⏰ Premium Order #${order.id} expired`);
         }
@@ -2440,7 +2635,10 @@ async function sendPremiumToUser(orderId, recipientId, months) {
       // 🎯 Slotni bo'shatish
       releasePremiumPriceSlotByOrderId(orderId);
       
-      // 📢 Kanalga xabar
+      // � Cache dan o'chirish
+      removePriceFromCacheByOrderId(orderId);
+      
+      // �📢 Kanalga xabar
       sendChannelNotification(orderId, 'premium').catch(err => console.error("Notification error:", err));
       return { status: "completed", transaction_id: data.transaction_id };
     }
@@ -3733,20 +3931,43 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
 
-    // 🎯 GIFT PRICE SLOT SYSTEM - Dinamik narx
-    const priceSlotIndex = getAvailableGiftPriceSlot(serverStars);
+    // 🎯 GIFT PRICE SLOT SYSTEM - Collision-free slot topish
+    // 🛡️ Cache dan tekshirish (O(1) tezlik - database query yo'q!)
+    let priceSlotIndex = -1;
+    let slotBasedPrice = 0;
+    
+    // Collision-free slot topish
+    for (let i = 0; i < GIFT_SLOT_CONFIG.MAX_SLOTS; i++) {
+      // Slot band bo'lsa, keyingisiga o'tish
+      if (giftPriceSlots[serverStars] && giftPriceSlots[serverStars][i]) {
+        const elapsed = Date.now() - giftPriceSlots[serverStars][i].createdAt;
+        if (elapsed <= GIFT_SLOT_CONFIG.SLOT_TIMEOUT) {
+          continue; // Slot hali band
+        }
+      }
+      
+      // Bu slot uchun narxni hisoblash
+      const potentialPrice = calculateGiftSlotPrice(serverStars, i);
+      
+      // Bu narx boshqa pending orderda bormi? (Cache - O(1))
+      if (!isPriceUsed(potentialPrice)) {
+        priceSlotIndex = i;
+        slotBasedPrice = potentialPrice;
+        break;
+      }
+      
+      console.log(`⚠️ Gift slot ${i} narxi (${potentialPrice}) boshqa pending orderda bor, keyingisiga o'tmoqda...`);
+    }
     
     if (priceSlotIndex === -1) {
-      // Barcha slotlar band
-      console.log(`⚠️ Barcha gift slotlar band: stars=${serverStars}`);
+      // Barcha slotlar band yoki collision bor
+      console.log(`⚠️ Barcha gift slotlar band yoki collision: stars=${serverStars}`);
       return res.status(503).json({
         error: "Hozirda juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
         code: "SLOTS_FULL"
       });
     }
 
-    // Slot-based narxni hisoblash
-    const slotBasedPrice = calculateGiftSlotPrice(serverStars, priceSlotIndex);
     console.log(`🎯 Gift Slot ${priceSlotIndex}: ${serverStars} stars = ${slotBasedPrice} so'm (base: ${amount})`);
 
     const cleanUsername = recipientUsername.startsWith("@")
@@ -3759,6 +3980,21 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(1002)');
+      
+      // 🛡️ COLLISION CHECK - Transaction ichida qayta tekshirish
+      const collisionCheck = await client.query(
+        "SELECT id FROM orders WHERE summ = $1 AND status = 'pending' AND payment_status = 'pending' LIMIT 1",
+        [slotBasedPrice]
+      );
+      
+      if (collisionCheck.rows.length > 0) {
+        await client.query('ROLLBACK');
+        console.log(`⚠️ Collision aniqlandi transaction ichida: ${slotBasedPrice} so'm`);
+        return res.status(503).json({
+          error: "Narx to'qnashuvi. Iltimos, qayta urinib ko'ring.",
+          code: "PRICE_COLLISION"
+        });
+      }
       
       const orderId = crypto.randomUUID();
       const result = await client.query(
@@ -3783,6 +4019,9 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
       
       // 🎯 Slotni rezerv qilish - order yaratilgandan keyin
       reserveGiftPriceSlot(serverStars, priceSlotIndex, order.id);
+      
+      // 🔄 Global cache ga qo'shish
+      addPriceToCache(order.summ, order.id, 'gift');
       
     } catch (err) {
       await client.query('ROLLBACK');
@@ -3818,6 +4057,9 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
           
           // 🎯 Slotni bo'shatish
           releaseGiftPriceSlotByOrderId(order.id);
+          
+          // 🔄 Cache dan o'chirish
+          removePriceFromCacheByOrderId(order.id);
           
           console.log(`⏰ Gift Order #${order.id} expired`);
         }
@@ -3971,6 +4213,10 @@ async function sendGiftToUser(order) {
       [order.id]
     );
     releaseGiftPriceSlotByOrderId(order.id);
+    
+    // 🔄 Cache dan o'chirish
+    removePriceFromCacheByOrderId(order.id);
+    
     console.log(`✅ Gift muvaffaqiyatli yuborildi: #${order.id} → @${order.recipient}`);
     // 📢 Kanalga xabar
     sendUnifiedChannelNotification(order, 'gift').catch(err => console.error("Gift notification error:", err));
@@ -4169,18 +4415,12 @@ app.get("/api/admin/bot-stars-balance", adminAuth, async (req, res) => {
 // ==============================================
 // 🔧 Unique summ generatsiya qiluvchi funksiya
 async function generateUniqueOrderSum(baseAmount, client) {
-  // Barcha pending orderlardan amountlarni olish
-  const pendingAmounts = await client.query(
-    "SELECT summ FROM orders WHERE status = 'pending' OR payment_status = 'pending'"
-  );
-  const usedAmounts = new Set(pendingAmounts.rows.map(r => r.summ));
-  
-  // Unique amount topamiz
+  // 🔄 Global cache dan foydalanish (tezkor)
   let uniqueSum = baseAmount;
   let attempts = 0;
   const maxAttempts = 200;
   
-  while (usedAmounts.has(uniqueSum) && attempts < maxAttempts) {
+  while (isPriceUsed(uniqueSum) && attempts < maxAttempts) {
     const offset = Math.floor(Math.random() * 101) - 50;
     uniqueSum = baseAmount + offset;
     attempts++;
@@ -4188,6 +4428,17 @@ async function generateUniqueOrderSum(baseAmount, client) {
   
   if (attempts >= maxAttempts) {
     throw new Error("Unique summ topilmadi, keyinroq urinib ko'ring");
+  }
+  
+  // Transaction ichida yakuniy tekshiruv (atomik xavfsizlik)
+  const finalCheck = await client.query(
+    "SELECT id FROM orders WHERE summ = $1 AND (status = 'pending' OR payment_status = 'pending') LIMIT 1",
+    [uniqueSum]
+  );
+  
+  if (finalCheck.rows.length > 0) {
+    // Juda kam hollarda - cache outdated bo'lsa
+    return generateUniqueOrderSum(baseAmount + Math.floor(Math.random() * 100), client);
   }
   
   return uniqueSum;
@@ -4311,6 +4562,9 @@ app.post("/api/v2/order/create", orderLimiter, telegramAuth, async (req, res) =>
       await client.query('COMMIT');
       order = result.rows[0];
       
+      // 🔄 Global cache ga qo'shish
+      addPriceToCache(order.summ, order.id, order.order_type);
+      
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -4344,6 +4598,10 @@ app.post("/api/v2/order/create", orderLimiter, telegramAuth, async (req, res) =>
             "UPDATE orders SET status = 'expired', payment_status = 'expired' WHERE id = $1",
             [order.id]
           );
+          
+          // 🔄 Cache dan o'chirish
+          removePriceFromCacheByOrderId(order.id);
+          
           console.log(`⏰ Order #${order.id} expired`);
         }
       } catch (e) {
@@ -4913,4 +5171,10 @@ app.get("/api/v2/admin/orders/stats", adminAuth, async (req, res) => {
 // run server
 // ======================
 const PORT = process.env.PORT;
+
+// 🚀 Server start - cache ni yuklash
+loadPendingOrdersToCache().then(() => {
+  console.log(`✅ Cache yuklandi: ${globalUsedPrices.size} ta pending order`);
+});
+
 app.listen(PORT, () => console.log(`🚀 Backend running on port ${PORT}`));
