@@ -258,26 +258,31 @@ const PRICE_SLOT_CONFIG = {
   SLOT_TIMEOUT: 5 * 60 * 1000, // 5 daqiqa (ms)
 };
 
-// In-memory price slot tracker: { stars_amount: { slotIndex: { orderId, createdAt } } }
+// In-memory price slot tracker
+// Stars uchun shared pool (chunki barcha stars miqdorlari bir xil narx tizimini ishlatadi)
+// Key: 'stars_shared' - barcha stars orderlari uchun bitta pool
 const priceSlots = {};
+const STARS_SHARED_KEY = 'stars_shared';
 
-// Get available price slot for a star amount
+// Get available price slot for Stars (shared pool - barcha stars miqdorlari uchun)
 function getAvailablePriceSlot(starsAmount) {
+  // Stars uchun shared key ishlatamiz (barcha miqdorlar uchun bitta pool)
+  const key = STARS_SHARED_KEY;
   const now = Date.now();
   
   // Initialize if not exists
-  if (!priceSlots[starsAmount]) {
-    priceSlots[starsAmount] = {};
+  if (!priceSlots[key]) {
+    priceSlots[key] = {};
   }
   
-  const slots = priceSlots[starsAmount];
+  const slots = priceSlots[key];
   
   // Clean up expired slots
   for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
     if (slots[i]) {
       const elapsed = now - slots[i].createdAt;
       if (elapsed > PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
-        console.log(`🧹 Slot ${i} tozalandi (expired): stars=${starsAmount}`);
+        console.log(`🧹 Slot ${i} tozalandi (expired)`);
         delete slots[i];
       }
     }
@@ -294,27 +299,32 @@ function getAvailablePriceSlot(starsAmount) {
   return -1;
 }
 
-// Reserve a price slot
+// Reserve a price slot (shared pool for all Stars orders)
 function reservePriceSlot(starsAmount, slotIndex, orderId) {
-  if (!priceSlots[starsAmount]) {
-    priceSlots[starsAmount] = {};
+  const key = STARS_SHARED_KEY;
+  
+  if (!priceSlots[key]) {
+    priceSlots[key] = {};
   }
   
-  priceSlots[starsAmount][slotIndex] = {
+  priceSlots[key][slotIndex] = {
     orderId: orderId,
     createdAt: Date.now()
   };
   
-  console.log(`🎯 Slot ${slotIndex} rezerv qilindi: stars=${starsAmount}, orderId=${orderId}`);
+  console.log(`🎯 Stars Slot ${slotIndex} rezerv qilindi: orderId=${orderId}, price=${12000 - (slotIndex < 10 ? slotIndex * 100 : 50 + (slotIndex - 10) * 100)} so'm`);
 }
 
-// Release a price slot by orderId
+// Release a price slot by orderId (shared pool)
 function releasePriceSlotByOrderId(orderId) {
-  for (const starsAmount in priceSlots) {
-    for (const slotIndex in priceSlots[starsAmount]) {
-      if (priceSlots[starsAmount][slotIndex].orderId === orderId) {
-        console.log(`🔓 Slot ${slotIndex} bo'shatildi: stars=${starsAmount}, orderId=${orderId}`);
-        delete priceSlots[starsAmount][slotIndex];
+  const key = STARS_SHARED_KEY;
+  const slots = priceSlots[key];
+  
+  if (slots) {
+    for (const slotIndex in slots) {
+      if (slots[slotIndex].orderId === orderId) {
+        console.log(`🔓 Stars Slot ${slotIndex} bo'shatildi: orderId=${orderId}`);
+        delete slots[slotIndex];
         return true;
       }
     }
@@ -340,13 +350,15 @@ function calculateSlotPrice(starsAmount, slotIndex) {
   }
 }
 
-// Get current slot info for debugging
-function getPriceSlotsInfo(starsAmount) {
-  if (!priceSlots[starsAmount]) {
+// Get current slot info for debugging (shared pool)
+function getPriceSlotsInfo() {
+  const key = STARS_SHARED_KEY;
+  
+  if (!priceSlots[key]) {
     return { totalSlots: PRICE_SLOT_CONFIG.MAX_SLOTS, usedSlots: 0, slots: {} };
   }
   
-  const slots = priceSlots[starsAmount];
+  const slots = priceSlots[key];
   const usedSlots = Object.keys(slots).length;
   
   return {
@@ -1185,14 +1197,8 @@ app.post("/api/internal/release-slot", internalAuth, (req, res) => {
 // ======================
 // 🎯 INTERNAL: Slot info (debugging uchun)
 // ======================
-app.get("/api/internal/slots-info/:stars", internalAuth, (req, res) => {
-  const stars = parseInt(req.params.stars);
-  
-  if (!stars || isNaN(stars)) {
-    return res.status(400).json({ error: "Noto'g'ri stars parametri" });
-  }
-  
-  const info = getPriceSlotsInfo(stars);
+app.get("/api/internal/slots-info", internalAuth, (req, res) => {
+  const info = getPriceSlotsInfo();
   res.json(info);
 });
 
@@ -1218,15 +1224,17 @@ app.get("/api/stars/price/:stars", (req, res) => {
   const price = calculateSlotPrice(stars, slotIndex);
   const basePrice = 12000; // Maksimum narx
   const discount = basePrice - price;
+  const slotsInfo = getPriceSlotsInfo();
   
   res.json({
     available: true,
     stars: stars,
     basePrice: basePrice,
+    price: price,
     currentPrice: price,
     discount: discount,
     slotIndex: slotIndex,
-    availableSlots: PRICE_SLOT_CONFIG.MAX_SLOTS - Object.keys(priceSlots[stars] || {}).length
+    availableSlots: slotsInfo.availableSlots
   });
 });
 
@@ -1467,7 +1475,7 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
     const cleanUsername = username.startsWith("@")
       ? username.slice(1)
       : username;
-    // 🔢 Unique summ generatsiya
+    // 🎯 Slot tizimi allaqachon unique narx beradi - generateUniqueOrderSum kerak emas
     const client = await pool.connect();
     let order;
     
@@ -1475,7 +1483,8 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(1002)');
       
-      const uniqueSum = await generateUniqueOrderSum(amount, client);
+      // Slot-based narx - har bir slot unique narxga ega
+      const uniqueSum = amount;
       const orderId = crypto.randomUUID();
       // 🟦 YANGI orders jadvaliga yozish
       const result = await client.query(
