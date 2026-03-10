@@ -665,16 +665,20 @@ function getPremiumPriceSlotsInfo(months) {
 // ======================
 // 🎁 GIFT PRICE SLOT SYSTEM - Dinamik narx tizimi (Chiroyli narxlar)
 // ======================
-// 10 ta slot, har biri 50 so'm farq bilan (maksimal -450 so'm)
-// Masalan, 50 stars gift = 12,000 so'm base:
+// 10 ta slot: birinchi 5 ta round narxlar, keyingi 5 ta 50 so'm offset
+// Masalan, 15 stars gift = 4,000 so'm base:
 // ┌─────────────────────────────────────────────────────────────────┐
-// │ Slot 0: 12,000 | Slot 1: 11,950 | Slot 2: 11,900 | Slot 3: 11,850 │
-// │ Slot 4: 11,800 | Slot 5: 11,750 | Slot 6: 11,700 | Slot 7: 11,650 │
-// │ Slot 8: 11,600 | Slot 9: 11,550                                  │
+// │ Birinchi 5 slot (round narxlar - 100 so'm step):                │
+// │ Slot 0: 4,000 | Slot 1: 3,900 | Slot 2: 3,800 | Slot 3: 3,700   │
+// │ Slot 4: 3,600                                                    │
+// ├─────────────────────────────────────────────────────────────────┤
+// │ Ikkinchi 5 slot (50 so'm offset - 100 so'm step):               │
+// │ Slot 5: 3,950 | Slot 6: 3,850 | Slot 7: 3,750 | Slot 8: 3,650   │
+// │ Slot 9: 3,550                                                    │
 // └─────────────────────────────────────────────────────────────────┘
 const GIFT_SLOT_CONFIG = {
   MAX_SLOTS: 10,           // Maksimum parallel gift orderlar (0-9)
-  PRICE_STEP: 50,          // Har bir slot uchun 50 so'm farq
+  PRICE_STEP: 100,         // Har bir slot uchun 100 so'm farq
   SLOT_TIMEOUT: 5 * 60 * 1000, // 5 daqiqa (ms)
 };
 
@@ -743,11 +747,18 @@ function releaseGiftPriceSlotByOrderId(orderId) {
 }
 
 // Calculate gift price for a slot - CHIROYLI NARX TIZIMI
-// 10 ta slot, har biri 50 so'm farq bilan (maks -450 so'm)
-// Formula: basePrice - (slotIndex * 50)
+// Birinchi 5 slot (0-4): round narxlar - base, base-100, base-200, base-300, base-400
+// Ikkinchi 5 slot (5-9): 50 so'm offset - base-50, base-150, base-250, base-350, base-450
 function calculateGiftSlotPrice(giftStars, slotIndex) {
   const basePrice = GIFT_PRICE_MAP[giftStars] || 0;
-  return basePrice - (slotIndex * GIFT_SLOT_CONFIG.PRICE_STEP);
+  
+  if (slotIndex < 5) {
+    // Birinchi 5 slot: base, base-100, base-200, base-300, base-400
+    return basePrice - (slotIndex * GIFT_SLOT_CONFIG.PRICE_STEP);
+  } else {
+    // Ikkinchi 5 slot: base-50, base-150, base-250, base-350, base-450
+    return basePrice - 50 - ((slotIndex - 5) * GIFT_SLOT_CONFIG.PRICE_STEP);
+  }
 }
 
 // Get current gift slot info for debugging
