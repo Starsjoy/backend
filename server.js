@@ -2039,17 +2039,32 @@ app.get("/api/stats/leaderboard", telegramAuth, async (req, res) => {
       // Bugundan 30 kun orqaga
       dateFilter = "AND o.created_at >= CURRENT_DATE - INTERVAL '29 days'";
     }
+
+    // Debug: Check if data exists
+    const debugQuery = `
+      SELECT 
+        order_type, 
+        status, 
+        COUNT(*) as cnt,
+        SUM(COALESCE(summ, amount, 0))::BIGINT as total_sum
+      FROM orders 
+      WHERE status IN ('stars_sent', 'premium_sent', 'gift_sent')
+      GROUP BY order_type, status
+    `;
+    const debugResult = await pool.query(debugQuery);
+    console.log("📊 DEBUG leaderboard orders:", debugResult.rows);
+
     const query = `
       WITH order_totals AS (
         SELECT 
           o.owner_user_id,
-          SUM(o.summ)::BIGINT AS total
+          SUM(COALESCE(o.summ, o.amount, 0))::BIGINT AS total
         FROM orders o
         WHERE o.status IN ('stars_sent', 'premium_sent', 'gift_sent')
-          AND o.order_type IN ('stars', 'premium', 'gift')
           AND o.owner_user_id IS NOT NULL
           ${dateFilter}
         GROUP BY o.owner_user_id
+        HAVING SUM(COALESCE(o.summ, o.amount, 0)) > 0
       ),
       ranked AS (
         SELECT
@@ -2061,10 +2076,13 @@ app.get("/api/stats/leaderboard", telegramAuth, async (req, res) => {
         LEFT JOIN users u ON u.user_id = ot.owner_user_id
       )
       SELECT owner_user_id, nickname, total, rank FROM ranked
-      ORDER BY rank;
+      ORDER BY rank
+      LIMIT 100;
     `;
+    console.log("📊 Leaderboard query (period:", period, "):", dateFilter);
     const result = await pool.query(query);
     const rows = result.rows;
+    console.log("📊 Leaderboard results count:", rows.length);
     const top10 = rows.slice(0, 10);
     const me = myUserId
       ? rows.find((r) => r.owner_user_id === myUserId) || null
