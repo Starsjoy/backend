@@ -2046,7 +2046,7 @@ app.get("/api/stats/leaderboard", telegramAuth, async (req, res) => {
         order_type, 
         status, 
         COUNT(*) as cnt,
-        SUM(COALESCE(summ, amount, 0))::BIGINT as total_sum
+        SUM(COALESCE(summ, 0))::BIGINT as total_sum
       FROM orders 
       WHERE status IN ('stars_sent', 'premium_sent', 'gift_sent')
       GROUP BY order_type, status
@@ -2058,13 +2058,13 @@ app.get("/api/stats/leaderboard", telegramAuth, async (req, res) => {
       WITH order_totals AS (
         SELECT 
           o.owner_user_id,
-          SUM(COALESCE(o.summ, o.amount, 0))::BIGINT AS total
+          SUM(COALESCE(o.summ, 0))::BIGINT AS total
         FROM orders o
         WHERE o.status IN ('stars_sent', 'premium_sent', 'gift_sent')
           AND o.owner_user_id IS NOT NULL
           ${dateFilter}
         GROUP BY o.owner_user_id
-        HAVING SUM(COALESCE(o.summ, o.amount, 0)) > 0
+        HAVING SUM(COALESCE(o.summ, 0)) > 0
       ),
       ranked AS (
         SELECT
