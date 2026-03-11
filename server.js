@@ -283,17 +283,13 @@ async function loadPendingOrdersToCache() {
       // Slot tizimiga yuklash (faqat stars uchun)
       if (order.order_type === 'stars' && order.type_amount) {
         const starsAmount = order.type_amount;
-        const basePrice = starsAmount * STARS_PRICE_PER_UNIT;
-        const diff = basePrice - order.summ;
+        const maxPrice = starsAmount * STARS_PRICE_PER_UNIT;
+        const diff = maxPrice - order.summ;
         
-        // Slot index'ni aniqlash
+        // Slot index'ni aniqlash (yangi formula: diff = slotIndex * 50)
         let slotIndex = -1;
-        if (diff >= 0 && diff % 100 === 0 && diff / 100 < 10) {
-          // Birinchi 10 slot (0-9): diff = slotIndex * 100
-          slotIndex = diff / 100;
-        } else if (diff >= 50 && (diff - 50) % 100 === 0) {
-          // Ikkinchi 10 slot (10-19): diff = 50 + (slotIndex - 10) * 100
-          slotIndex = 10 + (diff - 50) / 100;
+        if (diff >= 0 && diff <= 950 && diff % 50 === 0) {
+          slotIndex = diff / 50;
         }
         
         if (slotIndex >= 0 && slotIndex < 20) {
@@ -302,7 +298,7 @@ async function loadPendingOrdersToCache() {
             orderId: order.id,
             createdAt: new Date(order.created_at).getTime()
           };
-          console.log(`📦 Stars slot yuklandi: ${starsAmount} stars, slot ${slotIndex}, order #${order.id}`);
+          console.log(`📦 Stars slot yuklandi: ${starsAmount} stars, slot ${slotIndex}, order #${order.id}, price=${order.summ}`);
         }
       }
     }
@@ -358,10 +354,11 @@ setInterval(async () => {
     
     if (expireResult.rows.length > 0) {
       console.log(`🧹 ${expireResult.rows.length} ta eski pending order expired qilindi`);
-      // Cache dan ham o'chirish
+      // Cache dan ham o'chirish (stars va discount slotlar)
       for (const row of expireResult.rows) {
         globalUsedPrices.delete(row.summ);
         releasePriceSlotByOrderId(row.id);
+        releaseDiscountPriceSlotByOrderId(row.id);
       }
     }
     
@@ -387,17 +384,15 @@ setInterval(async () => {
 // 🎯 PRICE SLOT SYSTEM - Dinamik narx tizimi (Stars * NARX so'm)
 // ======================
 // Har bir Stars miqdori uchun alohida slot pool:
-// BasePrice = starsAmount * NARX (240 so'm)
+// MaxPrice = starsAmount * NARX (240 so'm)
+// 20 ta slot: -50 so'm step har bir slot uchun
 // ┌─────────────────────────────────────────────────────────────────┐
-// │ Misol: 100 Stars (basePrice = 24,000 so'm)                      │
+// │ Misol: 50 Stars (maxPrice = 12,000 so'm)                        │
 // ├─────────────────────────────────────────────────────────────────┤
-// │ Birinchi 10 slot (round narxlar):                               │
-// │ Slot 0:  24,000 | Slot 1:  23,900 | Slot 2:  23,800 | ...       │
-// │ ... | Slot 9:  23,100                                           │
-// ├─────────────────────────────────────────────────────────────────┤
-// │ Ikkinchi 10 slot (50 so'm offset):                              │
-// │ Slot 10: 23,950 | Slot 11: 23,850 | Slot 12: 23,750 | ...       │
-// │ ... | Slot 19: 23,050                                           │
+// │ 20 ta slot (-50 so'm step):                                     │
+// │ Slot 0: 12,000 | Slot 1: 11,950 | Slot 2: 11,900 | ...          │
+// │ ... | Slot 19: 11,050                                           │
+// │ Oraliq: 12,000 - 11,050 = 950 so'm                             │
 // └─────────────────────────────────────────────────────────────────┘
 const PRICE_SLOT_CONFIG = {
   MAX_SLOTS: 20,           // Maksimum parallel orderlar (0-19)
@@ -492,27 +487,27 @@ function releasePriceSlotByOrderId(orderId, starsAmount = null) {
   return false;
 }
 
-// Calculate price for a slot - CHIROYLI NARX TIZIMI
-// Asosiy narx: starsAmount * NARX (240 so'm)
-// Masalan: 100 stars = 24,000 so'm, 1000 stars = 240,000 so'm
-// Birinchi 10 slot (0-9): round narxlar (100 so'm step pastga)
-// Ikkinchi 10 slot (10-19): 50 so'm offset bilan (100 so'm step)
+// Calculate price for a slot - YANGI CHIROYLI NARX TIZIMI
+// Har bir stars miqdori uchun 20 ta slot:
+// - maxPrice = stars * 240 (masalan: 50 stars = 12000, 100 stars = 24000)
+// - minPrice = maxPrice - 1000 (masalan: 50 stars = 11000, 100 stars = 23000)
+// - Step: -50 so'm har bir slot uchun
 // 
-// Misol (100 stars, basePrice=24000):
-// Slot 0: 24000, Slot 1: 23900, ... Slot 9: 23100
-// Slot 10: 23950, Slot 11: 23850, ... Slot 19: 23050
+// Misol (50 stars, maxPrice=12000):
+// Slot 0: 12000, Slot 1: 11950, Slot 2: 11900, ... Slot 19: 11050
+// Slot 20 yo'q - faqat 20 ta slot (0-19)
 function calculateSlotPrice(starsAmount, slotIndex) {
-  const basePrice = starsAmount * STARS_PRICE_PER_UNIT; // Asosiy narx: stars * 240
-  
-  if (slotIndex < 10) {
-    // Birinchi 10 slot: basePrice, basePrice-100, basePrice-200...
-    // Formula: basePrice - (slotIndex * 100)
-    return basePrice - (slotIndex * 100);
-  } else {
-    // Ikkinchi 10 slot: basePrice-50, basePrice-150, basePrice-250...
-    // Formula: basePrice - 50 - ((slotIndex - 10) * 100)
-    return basePrice - 50 - ((slotIndex - 10) * 100);
-  }
+  const maxPrice = starsAmount * STARS_PRICE_PER_UNIT; // Asosiy/max narx: stars * 240
+  // Har bir slot -50 so'm kamayadi
+  return maxPrice - (slotIndex * 50);
+}
+
+// Narxdan slot indexni aniqlash (teskari formula)
+function getSlotIndexFromPrice(starsAmount, price) {
+  const maxPrice = starsAmount * STARS_PRICE_PER_UNIT;
+  const diff = maxPrice - price;
+  if (diff < 0 || diff > 950 || diff % 50 !== 0) return -1;
+  return diff / 50;
 }
 
 // Get current slot info for debugging (har bir stars miqdori uchun)
@@ -551,16 +546,14 @@ function getPriceSlotsInfo(starsAmount = null) {
 // ======================
 // Har bir chegirma paketi uchun alohida slot pool
 // BasePrice = chegirma paketi narxi (discounted_price)
+// 20 ta slot: -50 so'm step har bir slot uchun
 // ┌─────────────────────────────────────────────────────────────────┐
 // │ Misol: Chegirma paketi 1000 Stars = 200,000 so'm                │
 // ├─────────────────────────────────────────────────────────────────┤
-// │ Birinchi 10 slot (round narxlar):                               │
-// │ Slot 0: 200,000 | Slot 1: 199,900 | Slot 2: 199,800 | ...       │
-// │ ... | Slot 9: 199,100                                           │
-// ├─────────────────────────────────────────────────────────────────┤
-// │ Ikkinchi 10 slot (50 so'm offset):                              │
-// │ Slot 10: 199,950 | Slot 11: 199,850 | Slot 12: 199,750 | ...    │
+// │ 20 ta slot (-50 so'm step):                                     │
+// │ Slot 0: 200,000 | Slot 1: 199,950 | Slot 2: 199,900 | ...       │
 // │ ... | Slot 19: 199,050                                          │
+// │ Oraliq: 200,000 - 199,050 = 950 so'm                           │
 // └─────────────────────────────────────────────────────────────────┘
 
 // In-memory discount price slot tracker: { packageId: { slotIndex: { orderId, createdAt } } }
@@ -649,18 +642,21 @@ function releaseDiscountPriceSlotByOrderId(orderId, packageId = null) {
   return false;
 }
 
-// Calculate discount slot price - CHIROYLI NARX TIZIMI
+// Calculate discount slot price - YANGI CHIROYLI NARX TIZIMI (Stars bilan bir xil)
 // Asosiy narx: chegirma paketi narxi (discounted_price)
-// Birinchi 10 slot (0-9): round narxlar (100 so'm step pastga)
-// Ikkinchi 10 slot (10-19): 50 so'm offset bilan (100 so'm step)
+// 20 ta slot: -50 so'm step har bir slot uchun
+// Misol (basePrice = 200000):
+// Slot 0: 200000, Slot 1: 199950, Slot 2: 199900, ... Slot 19: 199050
 function calculateDiscountSlotPrice(basePrice, slotIndex) {
-  if (slotIndex < 10) {
-    // Birinchi 10 slot: basePrice, basePrice-100, basePrice-200...
-    return basePrice - (slotIndex * 100);
-  } else {
-    // Ikkinchi 10 slot: basePrice-50, basePrice-150, basePrice-250...
-    return basePrice - 50 - ((slotIndex - 10) * 100);
-  }
+  // Har bir slot -50 so'm kamayadi (Stars bilan bir xil)
+  return basePrice - (slotIndex * 50);
+}
+
+// Narxdan slot indexni aniqlash (teskari formula)
+function getDiscountSlotIndexFromPrice(basePrice, price) {
+  const diff = basePrice - price;
+  if (diff < 0 || diff > 950 || diff % 50 !== 0) return -1;
+  return diff / 50;
 }
 
 // Get discount slot info for debugging
@@ -1541,14 +1537,51 @@ app.get("/api/internal/slots-info", internalAuth, (req, res) => {
 // ======================
 // 🎯 PUBLIC: Narx olish (frontend uchun)
 // ======================
-app.get("/api/stars/price/:stars", (req, res) => {
+app.get("/api/stars/price/:stars", async (req, res) => {
   const stars = parseInt(req.params.stars);
   
   if (!stars || isNaN(stars) || stars < 50 || stars > 10000) {
     return res.status(400).json({ error: "Stars 50 dan 10000 gacha bo'lishi kerak" });
   }
   
-  const slotIndex = getAvailablePriceSlot(stars);
+  // 🛡️ Gift/Premium pending orderlar narxlarini olish (conflict uchun)
+  let conflictPrices = new Set();
+  try {
+    const giftPremiumPrices = await pool.query(
+      `SELECT DISTINCT summ FROM orders 
+       WHERE order_type IN ('gift', 'premium') 
+       AND status = 'pending' AND payment_status = 'pending'
+       AND created_at >= NOW() - INTERVAL '5 minutes'`
+    );
+    conflictPrices = new Set(giftPremiumPrices.rows.map(r => r.summ));
+  } catch (err) {
+    console.error('⚠️ Conflict prices olishda xato:', err.message);
+  }
+  
+  // Bo'sh slot topish (conflict tekshirish bilan)
+  let slotIndex = -1;
+  for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+    const baseSlot = getAvailablePriceSlot(stars);
+    if (baseSlot === -1) break;
+    
+    // Slotni tekshirish
+    const key = String(stars);
+    if (priceSlots[key] && priceSlots[key][i]) {
+      const elapsed = Date.now() - priceSlots[key][i].createdAt;
+      if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
+        continue; // Slot band
+      }
+    }
+    
+    // Bo'sh slot, narxni tekshirish
+    const candidatePrice = calculateSlotPrice(stars, i);
+    if (conflictPrices.has(candidatePrice)) {
+      continue; // Gift/Premium bilan conflict
+    }
+    
+    slotIndex = i;
+    break;
+  }
   
   if (slotIndex === -1) {
     return res.json({ 
@@ -1557,18 +1590,18 @@ app.get("/api/stars/price/:stars", (req, res) => {
     });
   }
   
-  const basePrice = stars * STARS_PRICE_PER_UNIT; // Asosiy narx: stars * 240
+  const maxPrice = stars * STARS_PRICE_PER_UNIT; // Max narx: stars * 240
   const price = calculateSlotPrice(stars, slotIndex);
-  const discount = basePrice - price;
+  const minPrice = maxPrice - 950; // 20 ta slot (0-19), oxirgisi maxPrice - 950
   const slotsInfo = getPriceSlotsInfo(stars);
   
   res.json({
     available: true,
     stars: stars,
-    basePrice: basePrice,
+    maxPrice: maxPrice,
+    minPrice: minPrice,
     price: price,
     currentPrice: price,
-    discount: discount,
     slotIndex: slotIndex,
     availableSlots: slotsInfo.availableSlots || PRICE_SLOT_CONFIG.MAX_SLOTS
   });
@@ -1834,7 +1867,7 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
     
     if (!useDiscountSlot) {
       // 🛡️ Slot tizimi - har bir stars miqdori uchun alohida 20 ta slot
-      // Har bir slot unique narx beradi
+      // Har bir slot unique narx beradi (-50 so'm step)
       
       // Avval priceSlots ni bazadan sinxronlashtirish
       if (!priceSlots[String(starsNum)]) {
@@ -1850,16 +1883,15 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
         [starsNum]
       );
       
-      // Bazadagi pending orderlar uchun slotlarni band qilish
+      // Bazadagi pending orderlar uchun slotlarni band qilish (yangi formula)
       for (const order of pendingOrders.rows) {
-        const basePrice = starsNum * STARS_PRICE_PER_UNIT;
-        const diff = basePrice - order.summ;
+        const maxPrice = starsNum * STARS_PRICE_PER_UNIT;
+        const diff = maxPrice - order.summ;
         
+        // Yangi formula: diff = slotIndex * 50
         let slotIdx = -1;
-        if (diff >= 0 && diff % 100 === 0 && diff / 100 < 10) {
-          slotIdx = diff / 100;
-        } else if (diff >= 50 && (diff - 50) % 100 === 0 && (diff - 50) / 100 < 10) {
-          slotIdx = 10 + (diff - 50) / 100;
+        if (diff >= 0 && diff <= 950 && diff % 50 === 0) {
+          slotIdx = diff / 50;
         }
         
         if (slotIdx >= 0 && slotIdx < 20 && !priceSlots[String(starsNum)][slotIdx]) {
@@ -1870,8 +1902,18 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
         }
       }
       
-      // Bo'sh slot topish
+      // 🛡️ Gift/Premium pending orderlar narxlarini olish (conflict uchun)
+      const giftPremiumPrices = await pool.query(
+        `SELECT DISTINCT summ FROM orders 
+         WHERE order_type IN ('gift', 'premium') 
+         AND status = 'pending' AND payment_status = 'pending'
+         AND created_at >= NOW() - INTERVAL '5 minutes'`
+      );
+      const conflictPrices = new Set(giftPremiumPrices.rows.map(r => r.summ));
+      
+      // Bo'sh slot topish (Gift/Premium bilan conflict tekshirish bilan)
       for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+        // Slot band bo'lsa, tekshirish
         if (priceSlots[String(starsNum)][i]) {
           const elapsed = Date.now() - priceSlots[String(starsNum)][i].createdAt;
           if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
@@ -1881,14 +1923,23 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
           delete priceSlots[String(starsNum)][i];
         }
         
-        // Bo'sh slot topildi
+        // Bo'sh slot topildi, narxni hisoblash
+        const candidatePrice = calculateSlotPrice(starsNum, i);
+        
+        // 🛡️ Gift/Premium pending orderlar bilan conflict tekshirish
+        if (conflictPrices.has(candidatePrice)) {
+          console.log(`⚠️ Slot ${i} skip: ${candidatePrice} so'm Gift/Premium bilan conflict`);
+          continue; // Bu slotni o'tkazib yuborish
+        }
+        
+        // Bo'sh va conflict yo'q slot topildi
         priceSlotIndex = i;
-        amount = calculateSlotPrice(starsNum, i);
+        amount = candidatePrice;
         break;
       }
       
       if (priceSlotIndex === -1) {
-        // Barcha 20 ta slot band - BATAFSIL LOG
+        // Barcha 20 ta slot band yoki conflict - BATAFSIL LOG
         const slots = priceSlots[String(starsNum)] || {};
         const slotDetails = Object.entries(slots).map(([idx, s]) => {
           const elapsed = Math.round((Date.now() - s.createdAt) / 1000);
@@ -1896,13 +1947,14 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
         }).join(', ');
         console.log(`⚠️ SLOTS_FULL: stars=${starsNum}, band=${Object.keys(slots).length}/${PRICE_SLOT_CONFIG.MAX_SLOTS}`);
         console.log(`📊 Slot details: ${slotDetails || 'none'}`);
+        console.log(`📊 Conflict prices: ${[...conflictPrices].join(', ')}`);
         return res.status(503).json({
           error: "Hozirda juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
           code: "SLOTS_FULL"
         });
       }
 
-      console.log(`🎯 Slot ${priceSlotIndex}: ${starsNum} stars = ${amount} so'm (base: ${starsNum * STARS_PRICE_PER_UNIT})`);
+      console.log(`🎯 Slot ${priceSlotIndex}: ${starsNum} stars = ${amount} so'm (max: ${starsNum * STARS_PRICE_PER_UNIT})`);
       
       // 🎯 MUHIM: Slotni DARHOL rezerv qilish (race condition oldini olish)
       // Order ID sifatida vaqtinchalik ID ishlatamiz
@@ -2006,9 +2058,10 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
             [order.id]
           );
           
-          // 🎯 Slotni bo'shatish (faqat stars uchun)
+          // 🎯 Slotni bo'shatish (stars va discount)
           if (check.rows[0]?.order_type === 'stars') {
             releasePriceSlotByOrderId(order.id);
+            releaseDiscountPriceSlotByOrderId(order.id);
           }
           
           // 🔄 Cache dan o'chirish
@@ -2213,8 +2266,9 @@ async function sendStarsToUser(orderId, recipientId, stars) {
         "UPDATE orders SET status = 'failed' WHERE id = $1",
         [orderId]
       );
-      // 🎯 Slotni bo'shatish
+      // 🎯 Slotni bo'shatish (stars va discount)
       releasePriceSlotByOrderId(orderId);
+      releaseDiscountPriceSlotByOrderId(orderId);
       throw new Error("Purchase error: " + JSON.stringify(data));
     }
     const txId = data.transaction_id;
@@ -2226,8 +2280,9 @@ async function sendStarsToUser(orderId, recipientId, stars) {
       [txId, orderId]
     );
     
-    // 🎯 Slotni bo'shatish - order completed
+    // 🎯 Slotni bo'shatish - order completed (stars va discount)
     releasePriceSlotByOrderId(orderId);
+    releaseDiscountPriceSlotByOrderId(orderId);
     
     // 🔄 Cache dan o'chirish
     removePriceFromCacheByOrderId(orderId);
@@ -2239,8 +2294,9 @@ async function sendStarsToUser(orderId, recipientId, stars) {
   } catch (err) {
     console.error("❌ sendStarsToUser error:", err);
     await pool.query("UPDATE orders SET status='error' WHERE id=$1", [orderId]);
-    // 🎯 Slotni bo'shatish - order error
+    // 🎯 Slotni bo'shatish - order error (stars va discount)
     releasePriceSlotByOrderId(orderId);
+    releaseDiscountPriceSlotByOrderId(orderId);
     throw err;
   }
 }
