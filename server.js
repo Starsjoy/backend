@@ -64,7 +64,7 @@ const generalLimiter = rateLimit({
 });
 const orderLimiter = rateLimit({
   windowMs: 5 * 60 * 1000, // 5 daqiqa
-  max: 10, // har bir IP dan 10 ta order
+  max: 20, // har bir IP dan 20 ta order
   message: { error: 'Juda ko\'p order. 5 daqiqadan keyin urinib ko\'ring.' },
 });
 const searchLimiter = rateLimit({
