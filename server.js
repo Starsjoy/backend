@@ -1784,7 +1784,7 @@ app.post("/api/search", searchLimiter, telegramAuth, async (req, res) => {
 // ======================
 // 2️⃣ Order yaratish — YANGI orders jadvaliga yozadi
 // ======================
-app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
+app.post("/api/order", telegramAuth, async (req, res) => {
   try {
     const { username, recipient, stars, amount: requestedAmount, discount_package_id } = req.body;
     // ⚠️ Endi recipient majburiy!
@@ -2533,7 +2533,7 @@ app.post("/api/premium/search", searchLimiter, telegramAuth, async (req, res) =>
 //-----------------------
 // 🧾 PREMIUM ORDER YARATISH
 //-----------------------
-app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
+app.post("/api/premium", telegramAuth, async (req, res) => {
   try {
     console.log("\n=============== 🧾 PREMIUM ORDER YARATILMOQDA ===============");
     const { username, recipient, months } = req.body;
@@ -4128,7 +4128,7 @@ const GIFT_STARS_MAP = {
 // ======================
 // 🎁 GIFT ORDER — Order yaratish (to'lov kutish)
 // ======================
-app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
+app.post("/api/gift/order", telegramAuth, async (req, res) => {
   try {
     const { recipientUsername, giftId, anonymous, comment } = req.body;
     if (!recipientUsername || !giftId) {
@@ -4715,7 +4715,7 @@ async function generateUniqueOrderSum(baseAmount, client) {
   return uniqueSum;
 }
 // 📦 UNIFIED ORDER CREATE — Stars, Premium, Gift uchun yagona endpoint
-app.post("/api/v2/order/create", orderLimiter, telegramAuth, async (req, res) => {
+app.post("/api/v2/order/create", telegramAuth, async (req, res) => {
   try {
     console.log("\n=============== 📦 UNIFIED ORDER CREATE ===============");
     console.log("📥 Keldi:", req.body);
