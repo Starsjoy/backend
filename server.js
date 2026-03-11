@@ -2883,9 +2883,10 @@ app.get("/api/admin/premium/list", adminAuth, async (req, res) => {
       WHERE o.order_type='premium'
     `;
     const params = [];
-    // filter: status
+    // filter: status (premium_sent → completed mapping)
     if (status && status !== "all") {
-      params.push(status);
+      const dbStatus = status === 'premium_sent' ? 'completed' : status;
+      params.push(dbStatus);
       query += ` AND o.status = $${params.length}`;
     }
     // filter: search (recipient_username, recipient)
@@ -2896,7 +2897,14 @@ app.get("/api/admin/premium/list", adminAuth, async (req, res) => {
     }
     query += " ORDER BY o.id DESC";
     const result = await pool.query(query, params);
-    res.json({ success: true, orders: result.rows });
+    
+    // Status mapping: completed → premium_sent (frontend uchun)
+    const mapped = result.rows.map(row => ({
+      ...row,
+      status: row.status === 'completed' ? 'premium_sent' : row.status
+    }));
+    
+    res.json({ success: true, orders: mapped });
   } catch (err) {
     console.error("❌ /api/admin/premium/list ERROR:", err);
     res.status(500).json({ error: "Server xatosi" });
@@ -4453,8 +4461,10 @@ app.get("/api/admin/gift/list", adminAuth, async (req, res) => {
       WHERE o.order_type='gift'
     `;
     const params = [];
+    // filter: status (gift_sent → completed mapping)
     if (status && status !== "all") {
-      params.push(status);
+      const dbStatus = status === 'gift_sent' ? 'completed' : status;
+      params.push(dbStatus);
       query += ` AND o.status = $${params.length}`;
     }
     if (search) {
@@ -4464,7 +4474,14 @@ app.get("/api/admin/gift/list", adminAuth, async (req, res) => {
     }
     query += " ORDER BY o.id DESC";
     const result = await pool.query(query, params);
-    res.json({ success: true, orders: result.rows });
+    
+    // Status mapping: completed → gift_sent (frontend uchun)
+    const mapped = result.rows.map(row => ({
+      ...row,
+      status: row.status === 'completed' ? 'gift_sent' : row.status
+    }));
+    
+    res.json({ success: true, orders: mapped });
   } catch (err) {
     console.error("❌ /api/admin/gift/list ERROR:", err);
     res.status(500).json({ error: "Server xatosi" });
