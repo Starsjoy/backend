@@ -248,8 +248,9 @@ const globalUsedPrices = new Map();
 // Server ishga tushganda pending orderlarni yuklash
 async function loadPendingOrdersToCache() {
   try {
+    // Faqat oxirgi 5 daqiqadagi pending orderlarni yuklash
     const result = await pool.query(
-      "SELECT id, summ, order_type, created_at FROM orders WHERE status = 'pending' AND payment_status = 'pending'"
+      "SELECT id, summ, order_type, created_at FROM orders WHERE status = 'pending' AND payment_status = 'pending' AND created_at >= NOW() - INTERVAL '5 minutes'"
     );
     
     globalUsedPrices.clear();
@@ -262,7 +263,21 @@ async function loadPendingOrdersToCache() {
       });
     }
     
-    console.log(`📦 Cache yuklandi: ${globalUsedPrices.size} ta pending order`);
+    console.log(`📦 Cache yuklandi: ${globalUsedPrices.size} ta pending order (oxirgi 5 daqiqa)`);
+    
+    // Eski pending orderlarni expired qilish
+    const expireResult = await pool.query(`
+      UPDATE orders 
+      SET status = 'expired', payment_status = 'expired'
+      WHERE status = 'pending' 
+        AND payment_status = 'pending'
+        AND created_at < NOW() - INTERVAL '5 minutes'
+      RETURNING id
+    `);
+    
+    if (expireResult.rows.length > 0) {
+      console.log(`🧹 ${expireResult.rows.length} ta eski pending order expired qilindi`);
+    }
   } catch (err) {
     console.error('❌ Pending orderlarni yuklashda xato:', err.message);
   }
@@ -301,9 +316,28 @@ function isPriceUsed(price) {
 // Cache ni tozalash (expired orderlar) - har 1 daqiqada
 setInterval(async () => {
   try {
-    // Bazadan haqiqiy pending orderlarni olish
+    // 5 daqiqadan eski pending orderlarni expired qilish
+    const expireResult = await pool.query(`
+      UPDATE orders 
+      SET status = 'expired', payment_status = 'expired'
+      WHERE status = 'pending' 
+        AND payment_status = 'pending'
+        AND created_at < NOW() - INTERVAL '5 minutes'
+      RETURNING id, summ
+    `);
+    
+    if (expireResult.rows.length > 0) {
+      console.log(`🧹 ${expireResult.rows.length} ta eski pending order expired qilindi`);
+      // Cache dan ham o'chirish
+      for (const row of expireResult.rows) {
+        globalUsedPrices.delete(row.summ);
+        releasePriceSlotByOrderId(row.id);
+      }
+    }
+    
+    // Bazadan haqiqiy pending orderlarni olish (faqat oxirgi 5 daqiqadagi)
     const result = await pool.query(
-      "SELECT summ FROM orders WHERE status = 'pending' AND payment_status = 'pending'"
+      "SELECT summ FROM orders WHERE status = 'pending' AND payment_status = 'pending' AND created_at >= NOW() - INTERVAL '5 minutes'"
     );
     
     const dbPrices = new Set(result.rows.map(r => r.summ));
@@ -315,7 +349,7 @@ setInterval(async () => {
       }
     }
   } catch (err) {
-    // Silent fail - kritik emas
+    console.error('❌ Cache tozalashda xato:', err.message);
   }
 }, 60 * 1000); // Har 1 daqiqa
 
