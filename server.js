@@ -248,24 +248,7 @@ const globalUsedPrices = new Map();
 // Server ishga tushganda pending orderlarni yuklash
 async function loadPendingOrdersToCache() {
   try {
-    // Faqat oxirgi 5 daqiqadagi pending orderlarni yuklash
-    const result = await pool.query(
-      "SELECT id, summ, order_type, created_at FROM orders WHERE status = 'pending' AND payment_status = 'pending' AND created_at >= NOW() - INTERVAL '5 minutes'"
-    );
-    
-    globalUsedPrices.clear();
-    
-    for (const order of result.rows) {
-      globalUsedPrices.set(order.summ, {
-        orderId: order.id,
-        orderType: order.order_type,
-        createdAt: new Date(order.created_at).getTime()
-      });
-    }
-    
-    console.log(`📦 Cache yuklandi: ${globalUsedPrices.size} ta pending order (oxirgi 5 daqiqa)`);
-    
-    // Eski pending orderlarni expired qilish
+    // Avval eski pending orderlarni expired qilish (5 daqiqadan eski)
     const expireResult = await pool.query(`
       UPDATE orders 
       SET status = 'expired', payment_status = 'expired'
@@ -278,6 +261,53 @@ async function loadPendingOrdersToCache() {
     if (expireResult.rows.length > 0) {
       console.log(`🧹 ${expireResult.rows.length} ta eski pending order expired qilindi`);
     }
+    
+    // Faqat oxirgi 5 daqiqadagi pending orderlarni yuklash
+    const result = await pool.query(
+      "SELECT id, summ, order_type, type_amount, created_at FROM orders WHERE status = 'pending' AND payment_status = 'pending' AND created_at >= NOW() - INTERVAL '5 minutes'"
+    );
+    
+    globalUsedPrices.clear();
+    
+    // Slot tizimlarini tozalash
+    for (const key in priceSlots) delete priceSlots[key];
+    
+    for (const order of result.rows) {
+      // Global cache ga qo'shish
+      globalUsedPrices.set(order.summ, {
+        orderId: order.id,
+        orderType: order.order_type,
+        createdAt: new Date(order.created_at).getTime()
+      });
+      
+      // Slot tizimiga yuklash (faqat stars uchun)
+      if (order.order_type === 'stars' && order.type_amount) {
+        const starsAmount = order.type_amount;
+        const basePrice = starsAmount * STARS_PRICE_PER_UNIT;
+        const diff = basePrice - order.summ;
+        
+        // Slot index'ni aniqlash
+        let slotIndex = -1;
+        if (diff >= 0 && diff % 100 === 0 && diff / 100 < 10) {
+          // Birinchi 10 slot (0-9): diff = slotIndex * 100
+          slotIndex = diff / 100;
+        } else if (diff >= 50 && (diff - 50) % 100 === 0) {
+          // Ikkinchi 10 slot (10-19): diff = 50 + (slotIndex - 10) * 100
+          slotIndex = 10 + (diff - 50) / 100;
+        }
+        
+        if (slotIndex >= 0 && slotIndex < 20) {
+          if (!priceSlots[starsAmount]) priceSlots[starsAmount] = {};
+          priceSlots[starsAmount][slotIndex] = {
+            orderId: order.id,
+            createdAt: new Date(order.created_at).getTime()
+          };
+          console.log(`📦 Stars slot yuklandi: ${starsAmount} stars, slot ${slotIndex}, order #${order.id}`);
+        }
+      }
+    }
+    
+    console.log(`📦 Cache yuklandi: ${globalUsedPrices.size} ta pending order (oxirgi 5 daqiqa)`);
   } catch (err) {
     console.error('❌ Pending orderlarni yuklashda xato:', err.message);
   }
