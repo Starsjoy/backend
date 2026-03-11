@@ -1757,9 +1757,8 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
       if (discountCheck.rows.length > 0) {
         discountPackage = discountCheck.rows[0];
         
-        // 🛡️ Cache dan tekshirish (O(1) tezlik - database query yo'q!)
+        // 🛡️ Slot tizimi - har bir chegirma paketi uchun alohida 20 ta slot
         
-        // Collision-free slot topish
         for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
           // Slot band bo'lsa, keyingisiga o'tish
           if (discountPriceSlots[discountPackage.id] && discountPriceSlots[discountPackage.id][i]) {
@@ -1767,23 +1766,18 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
             if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
               continue;
             }
+            // Expired slot - tozalash
+            delete discountPriceSlots[discountPackage.id][i];
           }
           
-          // Bu slot uchun narxni hisoblash
-          const potentialPrice = calculateDiscountSlotPrice(discountPackage.discounted_price, i);
-          
-          // Bu narx boshqa pending orderda bormi? (Cache - O(1))
-          if (!isPriceUsed(potentialPrice)) {
-            discountSlotIndex = i;
-            amount = potentialPrice;
-            break;
-          }
-          
-          console.log(`⚠️ Discount slot ${i} narxi (${potentialPrice}) boshqa pending orderda bor, keyingisiga o'tmoqda...`);
+          // Bo'sh slot topildi
+          discountSlotIndex = i;
+          amount = calculateDiscountSlotPrice(discountPackage.discounted_price, i);
+          break;
         }
         
         if (discountSlotIndex === -1) {
-          console.log(`⚠️ Chegirma paketi slotlari band yoki collision: packageId=${discountPackage.id}`);
+          console.log(`⚠️ Chegirma paketi slotlari band: packageId=${discountPackage.id}`);
           return res.status(503).json({
             error: "Bu chegirma paketi uchun juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
             code: "SLOTS_FULL"
@@ -1799,9 +1793,9 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
     let priceSlotIndex = -1;
     
     if (!useDiscountSlot) {
-      // 🛡️ Cache dan tekshirish (O(1) tezlik - database query yo'q!)
+      // 🛡️ Slot tizimi - har bir stars miqdori uchun alohida 20 ta slot
+      // Har bir slot unique narx beradi, shuning uchun collision bo'lmaydi
       
-      // Collision-free slot topish
       for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
         // Slot band bo'lsa, keyingisiga o'tish
         if (priceSlots[String(starsNum)] && priceSlots[String(starsNum)][i]) {
@@ -1809,24 +1803,19 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
           if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
             continue; // Slot hali band
           }
+          // Expired slot - tozalash
+          delete priceSlots[String(starsNum)][i];
         }
         
-        // Bu slot uchun narxni hisoblash
-        const potentialPrice = calculateSlotPrice(starsNum, i);
-        
-        // Bu narx boshqa pending orderda bormi? (Cache - O(1))
-        if (!isPriceUsed(potentialPrice)) {
-          priceSlotIndex = i;
-          amount = potentialPrice;
-          break;
-        }
-        
-        console.log(`⚠️ Stars slot ${i} narxi (${potentialPrice}) boshqa pending orderda bor, keyingisiga o'tmoqda...`);
+        // Bo'sh slot topildi
+        priceSlotIndex = i;
+        amount = calculateSlotPrice(starsNum, i);
+        break;
       }
       
       if (priceSlotIndex === -1) {
-        // Barcha slotlar band yoki collision
-        console.log(`⚠️ Barcha slotlar band yoki collision: stars=${starsNum}`);
+        // Barcha 20 ta slot band
+        console.log(`⚠️ Barcha slotlar band: stars=${starsNum}`);
         return res.status(503).json({
           error: "Hozirda juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
           code: "SLOTS_FULL"
@@ -2413,13 +2402,10 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
 
-    // 🎯 PREMIUM PRICE SLOT SYSTEM - Collision-free slot topish
+    // 🎯 PREMIUM PRICE SLOT SYSTEM - Har bir premium davri uchun alohida 20 ta slot
     let priceSlotIndex = -1;
     let slotBasedPrice = 0;
     
-    // 🛡️ Cache dan tekshirish (O(1) tezlik - database query yo'q!)
-    
-    // Collision-free slot topish
     for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
       // Slot band bo'lsa, keyingisiga o'tish
       if (premiumPriceSlots[months] && premiumPriceSlots[months][i]) {
@@ -2427,24 +2413,19 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
         if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
           continue;
         }
+        // Expired slot - tozalash
+        delete premiumPriceSlots[months][i];
       }
       
-      // Bu slot uchun narxni hisoblash
-      const potentialPrice = calculatePremiumSlotPrice(months, i);
-      
-      // Bu narx boshqa pending orderda bormi? (Cache - O(1))
-      if (!isPriceUsed(potentialPrice)) {
-        priceSlotIndex = i;
-        slotBasedPrice = potentialPrice;
-        break;
-      }
-      
-      console.log(`⚠️ Premium slot ${i} narxi (${potentialPrice}) boshqa pending orderda bor, keyingisiga o'tmoqda...`);
+      // Bo'sh slot topildi
+      priceSlotIndex = i;
+      slotBasedPrice = calculatePremiumSlotPrice(months, i);
+      break;
     }
     
     if (priceSlotIndex === -1) {
-      // Barcha slotlar band yoki collision
-      console.log(`⚠️ Barcha premium slotlar band yoki collision: months=${months}`);
+      // Barcha 20 ta slot band
+      console.log(`⚠️ Barcha premium slotlar band: months=${months}`);
       return res.status(503).json({
         error: "Hozirda juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
         code: "SLOTS_FULL"
@@ -3965,12 +3946,10 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
     const tgUser = req.telegramUser;
     const ownerUserId = tgUser?.id ? String(tgUser.id) : null;
 
-    // 🎯 GIFT PRICE SLOT SYSTEM - Collision-free slot topish
-    // 🛡️ Cache dan tekshirish (O(1) tezlik - database query yo'q!)
+    // 🎯 GIFT PRICE SLOT SYSTEM - Har bir gift stars miqdori uchun alohida 20 ta slot
     let priceSlotIndex = -1;
     let slotBasedPrice = 0;
     
-    // Collision-free slot topish
     for (let i = 0; i < GIFT_SLOT_CONFIG.MAX_SLOTS; i++) {
       // Slot band bo'lsa, keyingisiga o'tish
       if (giftPriceSlots[serverStars] && giftPriceSlots[serverStars][i]) {
@@ -3978,24 +3957,19 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
         if (elapsed <= GIFT_SLOT_CONFIG.SLOT_TIMEOUT) {
           continue; // Slot hali band
         }
+        // Expired slot - tozalash
+        delete giftPriceSlots[serverStars][i];
       }
       
-      // Bu slot uchun narxni hisoblash
-      const potentialPrice = calculateGiftSlotPrice(serverStars, i);
-      
-      // Bu narx boshqa pending orderda bormi? (Cache - O(1))
-      if (!isPriceUsed(potentialPrice)) {
-        priceSlotIndex = i;
-        slotBasedPrice = potentialPrice;
-        break;
-      }
-      
-      console.log(`⚠️ Gift slot ${i} narxi (${potentialPrice}) boshqa pending orderda bor, keyingisiga o'tmoqda...`);
+      // Bo'sh slot topildi
+      priceSlotIndex = i;
+      slotBasedPrice = calculateGiftSlotPrice(serverStars, i);
+      break;
     }
     
     if (priceSlotIndex === -1) {
-      // Barcha slotlar band yoki collision bor
-      console.log(`⚠️ Barcha gift slotlar band yoki collision: stars=${serverStars}`);
+      // Barcha 20 ta slot band
+      console.log(`⚠️ Barcha gift slotlar band: stars=${serverStars}`);
       return res.status(503).json({
         error: "Hozirda juda ko'p buyurtmalar mavjud. Iltimos, 1-2 daqiqadan keyin qayta urinib ko'ring.",
         code: "SLOTS_FULL"
