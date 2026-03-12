@@ -52,6 +52,20 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Telegram-Init-Data', 'X-Internal-Key'],
 }));
 app.use(express.json({ limit: '1mb' }));
+
+// ======================
+// ⏱️ REQUEST TIMEOUT — So'rovlar 30 sekundda timeout bo'ladi
+// ======================
+app.use((req, res, next) => {
+  req.setTimeout(30000, () => {
+    console.warn(`⏱️ Request timeout: ${req.method} ${req.url}`);
+    if (!res.headersSent) {
+      res.status(408).json({ error: 'Request timeout' });
+    }
+  });
+  next();
+});
+
 // ======================
 // 🛡️ SECURITY: Rate Limiting
 // ======================
@@ -245,6 +259,45 @@ console.log(`💰 Stars narxi: 1⭐ = ${STARS_PRICE_PER_UNIT} UZS`);
 // { price: { orderId, createdAt, orderType } }
 const globalUsedPrices = new Map();
 
+// ======================
+// 📊 LEADERBOARD CACHE - Og'ir querylarni keshlash (30 sekund)
+// ======================
+const leaderboardCache = {
+  data: null,
+  timestamp: 0,
+  TTL: 30 * 1000, // 30 sekund
+};
+
+const referralLeaderboardCache = {
+  data: null,
+  timestamp: 0,
+  TTL: 30 * 1000,
+};
+
+function getCachedLeaderboard() {
+  if (leaderboardCache.data && Date.now() - leaderboardCache.timestamp < leaderboardCache.TTL) {
+    return leaderboardCache.data;
+  }
+  return null;
+}
+
+function setCachedLeaderboard(data) {
+  leaderboardCache.data = data;
+  leaderboardCache.timestamp = Date.now();
+}
+
+function getCachedReferralLeaderboard() {
+  if (referralLeaderboardCache.data && Date.now() - referralLeaderboardCache.timestamp < referralLeaderboardCache.TTL) {
+    return referralLeaderboardCache.data;
+  }
+  return null;
+}
+
+function setCachedReferralLeaderboard(data) {
+  referralLeaderboardCache.data = data;
+  referralLeaderboardCache.timestamp = Date.now();
+}
+
 // Server ishga tushganda pending orderlarni yuklash
 async function loadPendingOrdersToCache() {
   try {
@@ -398,6 +451,32 @@ const PRICE_SLOT_CONFIG = {
   MAX_SLOTS: 20,           // Maksimum parallel orderlar (0-19)
   SLOT_TIMEOUT: 5 * 60 * 1000, // 5 daqiqa (ms)
 };
+
+// ======================
+// 🔒 SIMPLE ASYNC LOCK — Race condition oldini olish
+// ======================
+const slotLocks = new Map(); // { key: Promise }
+
+async function withSlotLock(key, fn) {
+  // Oldingi lock tugashini kutish
+  while (slotLocks.has(key)) {
+    await slotLocks.get(key);
+  }
+  
+  // Yangi lock yaratish
+  let releaseLock;
+  const lockPromise = new Promise(resolve => {
+    releaseLock = resolve;
+  });
+  slotLocks.set(key, lockPromise);
+  
+  try {
+    return await fn();
+  } finally {
+    slotLocks.delete(key);
+    releaseLock();
+  }
+}
 
 // In-memory price slot tracker
 // Har bir stars miqdori uchun alohida slot pool
@@ -1244,10 +1323,37 @@ app.delete("/api/admin/notifications/:id", adminAuth, async (req, res) => {
 });
 
 // ======================
+// 🛡️ GLOBAL ERROR HANDLERS — Process crash oldini olish
+// ======================
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ Unhandled Rejection at:', promise, 'reason:', reason);
+  // Process'ni crash qilmaslik
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Uncaught Exception:', err);
+  // Critical xatolarda log qilib davom etish
+});
+
+// ======================
 // Postgresga ulanish
 // ======================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  max: 20, // Maksimum connection soni (default 10)
+  idleTimeoutMillis: 30000, // Bo'sh connection 30s da yopiladi
+  connectionTimeoutMillis: 10000, // Connection olish uchun 10s kutish
+  allowExitOnIdle: false, // Idle bo'lganda exit qilmaslik
+});
+
+// Pool error handler
+pool.on('error', (err) => {
+  console.error('❌ Database pool xatosi:', err.message);
+});
+
+// Pool connect handler
+pool.on('connect', () => {
+  console.log('📊 Database connection ochildi');
 });
 // ======================
 // Jadval yaratish
@@ -1314,6 +1420,40 @@ const pool = new Pool({
   `);
   console.log("✅ Table 'referral_earnings' ready");
 })();
+
+// ======================
+// 📈 DATABASE INDEXES — Query tezligini oshirish
+// ======================
+(async () => {
+  try {
+    // Orders jadvaliga indekslar
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_owner_user_id ON orders(owner_user_id)`);
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_status ON orders(status)`);
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_payment_status ON orders(payment_status)`);
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC)`);
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_summ ON orders(summ)`);
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_order_type ON orders(order_type)`);
+    // Composite index for leaderboard query
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_leaderboard ON orders(owner_user_id, status, order_type, summ)`);
+    
+    // Users jadvaliga indekslar
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_user_id ON users(user_id)`);
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_username ON users(username)`);
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_referrer_user_id ON users(referrer_user_id)`);
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_referral_code ON users(referral_code)`);
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_subscribe ON users(subscribe_user)`);
+    
+    // Notifications jadvaliga indekslar
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_notifications_user_id ON notifications(user_id)`);
+    await pool.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_notifications_is_read ON notifications(is_read)`);
+    
+    console.log("✅ Database indexes created");
+  } catch (err) {
+    // CONCURRENTLY ishlatganda xato bo'lishi mumkin, ignore qilamiz
+    console.log("⚠️ Some indexes may already exist:", err.message);
+  }
+})();
+
 // ======================
 // 🏷️ DISCOUNT PACKAGES TABLE
 // ======================
@@ -1974,7 +2114,7 @@ app.post("/api/order", telegramAuth, async (req, res) => {
     
     try {
       await client.query('BEGIN');
-      await client.query('SELECT pg_advisory_xact_lock(1002)');
+      await client.query('SELECT pg_advisory_xact_lock(1001)'); // Stars uchun alohida lock
       
       const uniqueSum = amount;
       
@@ -3114,6 +3254,162 @@ app.post("/api/interview/callback", (req, res) => {
   console.log("2-qism:", req.body);
   res.json({ received: true });
 });
+
+// ===============================
+// 🚀 DASHBOARD COMBINED API — Barcha ma'lumotlarni bitta so'rovda
+// ===============================
+app.get("/api/dashboard/init", telegramAuth, async (req, res) => {
+  try {
+    const { username, user_id } = req.query;
+    const startTime = Date.now();
+    
+    const clean = username?.startsWith("@") ? username.slice(1) : username;
+    
+    // 🚀 Cached leaderboards (30 sekund cache)
+    let leaderboardTop10 = getCachedLeaderboard();
+    let referralTop10 = getCachedReferralLeaderboard();
+    
+    // Agar cache yo'q bo'lsa, bazadan olish
+    const leaderboardPromise = leaderboardTop10 ? Promise.resolve({ rows: leaderboardTop10 }) : pool.query(`
+      WITH order_totals AS (
+        SELECT owner_user_id, SUM(COALESCE(summ, 0))::BIGINT AS total
+        FROM orders
+        WHERE status IN ('completed', 'delivered', 'stars_sent', 'premium_sent', 'gift_sent')
+          AND order_type IN ('stars', 'premium', 'gift')
+          AND owner_user_id IS NOT NULL
+        GROUP BY owner_user_id
+        HAVING SUM(COALESCE(summ, 0)) > 0
+      ),
+      ranked AS (
+        SELECT ot.owner_user_id, COALESCE(u.name, u.username, 'Foydalanuvchi') AS nickname,
+               ot.total, RANK() OVER (ORDER BY ot.total DESC) AS rank
+        FROM order_totals ot
+        LEFT JOIN users u ON u.user_id = ot.owner_user_id
+      )
+      SELECT * FROM ranked ORDER BY rank LIMIT 10
+    `);
+    
+    const referralLeaderboardPromise = referralTop10 ? Promise.resolve({ rows: referralTop10 }) : pool.query(`
+      WITH referral_counts AS (
+        SELECT u2.user_id, COALESCE(u2.name, u2.username, 'Foydalanuvchi') AS nickname,
+               COUNT(*) as referrals
+        FROM users u1
+        JOIN users u2 ON u1.referrer_user_id = u2.user_id
+        WHERE u1.referrer_user_id IS NOT NULL AND u1.subscribe_user = true
+        GROUP BY u2.user_id, u2.username, u2.name
+      )
+      SELECT *, ROW_NUMBER() OVER (ORDER BY referrals DESC) as rank
+      FROM referral_counts
+      ORDER BY referrals DESC LIMIT 10
+    `);
+    
+    // Barcha so'rovlarni parallel bajarish
+    const [
+      leaderboardResult,
+      referralLeaderboardResult,
+      historyResult,
+      referralStatsResult,
+      unreadResult,
+      myRankResult,
+      myRefRankResult
+    ] = await Promise.all([
+      leaderboardPromise,
+      referralLeaderboardPromise,
+      
+      // 3. User history (agar user_id mavjud bo'lsa)
+      user_id ? pool.query(`
+        SELECT id, recipient_username AS username, type_amount AS stars, summ AS amount,
+          CASE 
+            WHEN status = 'completed' AND order_type = 'stars' THEN 'stars_sent'
+            WHEN status = 'completed' AND order_type = 'premium' THEN 'premium_sent'
+            WHEN status = 'completed' AND order_type = 'gift' THEN 'gift_sent'
+            ELSE status
+          END AS status,
+          created_at, order_type AS kind
+        FROM orders WHERE owner_user_id = $1
+        ORDER BY created_at DESC LIMIT 50
+      `, [user_id]) : Promise.resolve({ rows: [] }),
+      
+      // 4. Referral stats (agar user_id mavjud bo'lsa)
+      user_id ? pool.query(`
+        SELECT referral_balance, total_earnings,
+          (SELECT COUNT(*) FROM users WHERE referrer_user_id = $1) as total_referrals
+        FROM users WHERE user_id = $1
+      `, [user_id]) : Promise.resolve({ rows: [] }),
+      
+      // 5. Unread notifications count
+      user_id ? pool.query(`
+        SELECT COUNT(*) as unread_count 
+        FROM notifications 
+        WHERE (user_id = $1 OR is_global = true) AND is_read = false
+      `, [user_id]) : Promise.resolve({ rows: [{ unread_count: 0 }] }),
+      
+      // 6. My leaderboard rank (parallel)
+      user_id ? pool.query(`
+        WITH order_totals AS (
+          SELECT owner_user_id, SUM(COALESCE(summ, 0))::BIGINT AS total
+          FROM orders
+          WHERE status IN ('completed', 'delivered', 'stars_sent', 'premium_sent', 'gift_sent')
+            AND order_type IN ('stars', 'premium', 'gift')
+            AND owner_user_id IS NOT NULL
+          GROUP BY owner_user_id
+        ),
+        ranked AS (
+          SELECT ot.owner_user_id, COALESCE(u.name, u.username, 'Foydalanuvchi') AS nickname,
+                 ot.total, RANK() OVER (ORDER BY ot.total DESC) AS rank
+          FROM order_totals ot
+          LEFT JOIN users u ON u.user_id = ot.owner_user_id
+        )
+        SELECT * FROM ranked WHERE owner_user_id = $1
+      `, [user_id]) : Promise.resolve({ rows: [] }),
+      
+      // 7. My referral rank (parallel)
+      user_id ? pool.query(`
+        WITH referral_counts AS (
+          SELECT u2.user_id, COALESCE(u2.name, u2.username, 'Foydalanuvchi') AS nickname,
+                 COUNT(*) as referrals
+          FROM users u1
+          JOIN users u2 ON u1.referrer_user_id = u2.user_id
+          WHERE u1.referrer_user_id IS NOT NULL AND u1.subscribe_user = true
+          GROUP BY u2.user_id, u2.username, u2.name
+        )
+        SELECT *, ROW_NUMBER() OVER (ORDER BY referrals DESC) as rank
+        FROM referral_counts WHERE user_id = $1
+      `, [user_id]) : Promise.resolve({ rows: [] })
+    ]);
+    
+    // Cache'ni yangilash (agar yangidan olingan bo'lsa)
+    if (!leaderboardTop10) {
+      setCachedLeaderboard(leaderboardResult.rows);
+    }
+    if (!referralTop10) {
+      setCachedReferralLeaderboard(referralLeaderboardResult.rows);
+    }
+    
+    const duration = Date.now() - startTime;
+    console.log(`🚀 Dashboard init: ${duration}ms (cached: ${leaderboardTop10 ? 'yes' : 'no'})`);
+    
+    res.json({
+      leaderboard: {
+        top10: leaderboardResult.rows,
+        me: myRankResult.rows[0] || null
+      },
+      referralLeaderboard: {
+        top10: referralLeaderboardResult.rows,
+        me: myRefRankResult.rows[0] || null
+      },
+      history: historyResult.rows,
+      referralStats: referralStatsResult.rows[0] || { referral_balance: 0, total_referrals: 0 },
+      unreadCount: parseInt(unreadResult.rows[0]?.unread_count || 0),
+      loadTime: duration
+    });
+    
+  } catch (err) {
+    console.error("❌ DASHBOARD INIT ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
 // ===============================
 // 📊 LEADERBOARD STATISTICS
 // ===============================
@@ -3893,10 +4189,8 @@ app.post("/api/referral/withdraw", authLimiter, telegramAuth, async (req, res) =
       return res.status(400).json({ error: "giftId kerak" });
     }
     
-    // Gift ID tekshirish
+    // Gift ID tekshirish (minimum 50 stars)
     const ALLOWED_GIFT_IDS_WITHDRAW = [
-      "5170145012310081615", "5170233102089322756",
-      "5170250947678437525", "5168103777563050263",
       "5170144170496491616", "5170314324215857265",
       "5170564780938756245", "6028601630662853006",
       "5922558454332916696", "5801108895304779062",
@@ -3905,8 +4199,6 @@ app.post("/api/referral/withdraw", authLimiter, telegramAuth, async (req, res) =
       "5170690322832818290", "5170521118301225164",
     ];
     const GIFT_STARS_WITHDRAW = {
-      "5170145012310081615": 15, "5170233102089322756": 15,
-      "5170250947678437525": 25, "5168103777563050263": 25,
       "5170144170496491616": 50, "5170314324215857265": 50,
       "5170564780938756245": 50, "6028601630662853006": 50,
       "5922558454332916696": 50, "5801108895304779062": 50,
@@ -4238,7 +4530,7 @@ app.post("/api/gift/order", telegramAuth, async (req, res) => {
     let order;
     try {
       await client.query('BEGIN');
-      await client.query('SELECT pg_advisory_xact_lock(1002)');
+      await client.query('SELECT pg_advisory_xact_lock(1003)'); // Gift uchun alohida lock
       
       const orderId = crypto.randomUUID();
       const result = await client.query(
@@ -4690,29 +4982,42 @@ async function generateUniqueOrderSum(baseAmount, client) {
   let uniqueSum = baseAmount;
   let attempts = 0;
   const maxAttempts = 200;
+  const maxDbRetries = 10; // DB tekshiruvi uchun maksimum qayta urinishlar
+  let dbRetries = 0;
   
-  while (isPriceUsed(uniqueSum) && attempts < maxAttempts) {
-    const offset = Math.floor(Math.random() * 101) - 50;
-    uniqueSum = baseAmount + offset;
-    attempts++;
+  while (dbRetries < maxDbRetries) {
+    attempts = 0;
+    
+    // Cache dan bo'sh narx qidirish
+    while (isPriceUsed(uniqueSum) && attempts < maxAttempts) {
+      const offset = Math.floor(Math.random() * 101) - 50;
+      uniqueSum = baseAmount + offset;
+      attempts++;
+    }
+    
+    if (attempts >= maxAttempts) {
+      throw new Error("Unique summ topilmadi, keyinroq urinib ko'ring");
+    }
+    
+    // Transaction ichida yakuniy tekshiruv (atomik xavfsizlik)
+    const finalCheck = await client.query(
+      "SELECT id FROM orders WHERE summ = $1 AND (status = 'pending' OR payment_status = 'pending') LIMIT 1",
+      [uniqueSum]
+    );
+    
+    if (finalCheck.rows.length === 0) {
+      // Unique narx topildi
+      return uniqueSum;
+    }
+    
+    // Cache outdated - cache ga qo'shib, qayta urinish (REKURSIYASIZ)
+    addPriceToCache(uniqueSum, 'temp_' + Date.now(), 'temp');
+    baseAmount = baseAmount + Math.floor(Math.random() * 100);
+    uniqueSum = baseAmount;
+    dbRetries++;
   }
   
-  if (attempts >= maxAttempts) {
-    throw new Error("Unique summ topilmadi, keyinroq urinib ko'ring");
-  }
-  
-  // Transaction ichida yakuniy tekshiruv (atomik xavfsizlik)
-  const finalCheck = await client.query(
-    "SELECT id FROM orders WHERE summ = $1 AND (status = 'pending' OR payment_status = 'pending') LIMIT 1",
-    [uniqueSum]
-  );
-  
-  if (finalCheck.rows.length > 0) {
-    // Juda kam hollarda - cache outdated bo'lsa
-    return generateUniqueOrderSum(baseAmount + Math.floor(Math.random() * 100), client);
-  }
-  
-  return uniqueSum;
+  throw new Error("Unique summ topilmadi, keyinroq urinib ko'ring (db retries exhausted)");
 }
 // 📦 UNIFIED ORDER CREATE — Stars, Premium, Gift uchun yagona endpoint
 app.post("/api/v2/order/create", telegramAuth, async (req, res) => {
@@ -4801,7 +5106,7 @@ app.post("/api/v2/order/create", telegramAuth, async (req, res) => {
     
     try {
       await client.query('BEGIN');
-      await client.query('SELECT pg_advisory_xact_lock(1002)'); // orders uchun alohida lock
+      await client.query('SELECT pg_advisory_xact_lock(1004)'); // Unified orders uchun alohida lock
       
       const uniqueSum = await generateUniqueOrderSum(baseSum, client);
       console.log(`✅ Unique summ: ${uniqueSum} so'm`);
