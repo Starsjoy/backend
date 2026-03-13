@@ -3996,17 +3996,19 @@ app.get("/api/discount-packages", async (req, res) => {
     // Har bir paketga slot narxini qo'shish
     const packagesWithSlotPrice = result.rows.map(pkg => {
       const slotIndex = getAvailableDiscountPriceSlot(pkg.id);
-      const basePrice = pkg.discounted_price;
+      const basePrice = pkg.stars * STARS_PRICE_PER_UNIT; // ✅ Asl narx: stars * 240
+      const discountedPrice = pkg.discounted_price; // API dan olgan chegirma narx
       
       if (slotIndex === -1) {
         return {
           ...pkg,
-          current_price: basePrice,
+          current_price: discountedPrice,
+          base_price: basePrice,
           slot_available: false
         };
       }
       
-      const slotPrice = calculateDiscountSlotPrice(basePrice, slotIndex);
+      const slotPrice = calculateDiscountSlotPrice(discountedPrice, slotIndex);
       const slotsInfo = getDiscountPriceSlotsInfo(pkg.id);
       
       return {
