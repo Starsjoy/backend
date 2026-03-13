@@ -3604,6 +3604,32 @@ app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) =
         `👤 Yangi user ro'yxatdan o'tdi: ${tgUsername} (name: ${tgName}, user_id: ${tgUserId}, referrer_user_id: ${referrer_user_id || "yo'q"}, language: ${language || 'uz'})`
       );
       
+      // 📝 Agar referrer mavjud bo'lsa - AUTOMATICALLY referral_request yaratiш
+      if (referrer_user_id) {
+        try {
+          const referrerResult = await pool.query(
+            "SELECT username FROM users WHERE user_id = $1",
+            [referrer_user_id]
+          );
+          
+          if (referrerResult.rows.length > 0) {
+            const referrerUsername = referrerResult.rows[0].username;
+            const is_subscribed = false; // New user har doim subscribe bo'lmagan
+            
+            await pool.query(
+              `INSERT INTO referral_requests 
+               (owner_user_id, owner_username, referrer_user_id, referrer_username, subscribe_referrer) 
+               VALUES ($1, $2, $3, $4, $5)`,
+              [tgUserId, tgUsername, referrer_user_id, referrerUsername, is_subscribed]
+            );
+            
+            console.log(`📝 Referral request AUTO-created: ${tgUsername} -> ${referrerUsername}`);
+          }
+        } catch (err) {
+          console.error("❌ Auto-create referral request error:", err.message);
+        }
+      }
+      
       // 🎉 Yangi foydalanuvchiga xush kelibsiz xabari yuborish
       sendWelcomeMessage(tgUserId, tgName || tgUsername).catch(err => {
         console.error("❌ Welcome message error:", err.message);
@@ -3674,6 +3700,17 @@ app.post("/api/user/subscribe-check", authLimiter, telegramAuth, async (req, res
       "UPDATE users SET subscribe_user = true WHERE user_id = $1",
       [tgUserId]
     );
+    
+    // 📝 Agar bu user referral request'ga ega bo'lsa - subscribe_referrer ni true qilish
+    try {
+      await pool.query(
+        "UPDATE referral_requests SET subscribe_referrer = true WHERE owner_user_id = $1 AND is_accepted = false AND rejected_at IS NULL",
+        [tgUserId]
+      );
+      console.log(`✅ Referral request updated: ${tgUserId} kanalga obuna bo'ldi`);
+    } catch (err) {
+      console.error("⚠️ Update referral request subscribe status error:", err.message);
+    }
     
     // Agar bu user referrer orqali kelgan bo'lsa - referral aktivlashdi va +2 bonus
     const referrerUserId = user.rows[0].referrer_user_id;
@@ -4268,7 +4305,30 @@ app.patch("/api/admin/referral-requests/:id/approve", adminAuth, async (req, res
       [req_data.referrer_user_id, req_data.owner_user_id]
     );
     
-    console.log(`✅ Admin: Referral tasdiqlandi - ${req_data.owner_username} -> ${req_data.referrer_username}`);
+    // 🎁 Agar subscriblagan bo'lsa - referrer ga +2 bonus qo'shish
+    if (req_data.subscribe_referrer) {
+      const bonusStars = 2;
+      await pool.query(
+        `UPDATE users 
+         SET referral_balance = referral_balance + $1,
+             total_earnings = total_earnings + $1,
+             total_referrals = total_referrals + 1
+         WHERE user_id = $2`,
+        [bonusStars, req_data.referrer_user_id]
+      );
+      
+      // Referral earnings log
+      await pool.query(
+        `INSERT INTO referral_earnings (referrer_username, referee_username, earned_stars, triggered_by_transaction_id)
+         VALUES ($1, $2, $3, $4)`,
+        [req_data.referrer_username, req_data.owner_username, bonusStars, null]
+      );
+      
+      console.log(`✅ Admin: Referral tasdiqlandi + BONUS - ${req_data.owner_username} -> ${req_data.referrer_username} (+${bonusStars}⭐)`);
+    } else {
+      console.log(`✅ Admin: Referral tasdiqlandi (NO BONUS - not subscribed) - ${req_data.owner_username} -> ${req_data.referrer_username}`);
+    }
+    
     res.json({ success: true, message: "Referral tasdiqlandi" });
   } catch (err) {
     console.error("❌ PATCH approve referral ERROR:", err);
