@@ -1489,6 +1489,27 @@ pool.on('connect', () => {
   `);
   console.log("✅ Table 'notifications' ready");
 })();
+
+// ======================
+// 📝 REFERRAL VERIFICATION REQUESTS TABLE
+// ======================
+(async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS referral_requests (
+      id SERIAL PRIMARY KEY,
+      owner_user_id TEXT NOT NULL,
+      owner_username TEXT NOT NULL,
+      referrer_user_id TEXT NOT NULL,
+      referrer_username TEXT NOT NULL,
+      subscribe_referrer BOOLEAN DEFAULT false,
+      is_accepted BOOLEAN DEFAULT false,
+      rejected_at TIMESTAMP WITH TIME ZONE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'Asia/Tashkent')
+    );
+  `);
+  console.log("✅ Table 'referral_requests' ready");
+})();
+
 // ======================
 // 📊 REFERRAL LEADERBOARD (referrer_user_id orqali sanash - faqat subscribe_user = true)
 // ======================
@@ -4126,6 +4147,170 @@ app.post("/api/validate-discount-price", async (req, res) => {
     res.status(500).json({ valid: false, error: "Server xato" });
   }
 });
+
+// ======================
+// ✅ REFERRAL REQUESTS - VERIFICATION SYSTEM
+// ======================
+
+// GET pending referral requests for admin
+app.get("/api/admin/referral-requests", adminAuth, async (req, res) => {
+  try {
+    const { filter } = req.query; // pending, accepted, rejected, all
+    let query = "SELECT * FROM referral_requests";
+    
+    if (filter === "pending") {
+      query += " WHERE is_accepted = false AND rejected_at IS NULL";
+    } else if (filter === "accepted") {
+      query += " WHERE is_accepted = true";
+    } else if (filter === "rejected") {
+      query += " WHERE rejected_at IS NOT NULL";
+    }
+    
+    query += " ORDER BY created_at DESC";
+    
+    const result = await pool.query(query);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("❌ GET referral-requests ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// POST - Create referral request (when user claims a referrer)
+app.post("/api/referral-requests", telegramAuth, async (req, res) => {
+  try {
+    const { referrer_username } = req.body;
+    const owner_user_id = req.user.id;
+    const owner_username = req.user.username;
+    
+    if (!referrer_username) {
+      return res.status(400).json({ error: "Referrer username kerak" });
+    }
+    
+    // Check if referrer exists
+    const referrerResult = await pool.query(
+      "SELECT user_id, username FROM users WHERE username = $1",
+      [referrer_username]
+    );
+    
+    if (referrerResult.rows.length === 0) {
+      return res.status(404).json({ error: "Referrer topilmadi" });
+    }
+    
+    const referrer = referrerResult.rows[0];
+    
+    // Get current user subscription status
+    const ownerResult = await pool.query(
+      "SELECT subscribe_user FROM users WHERE user_id = $1",
+      [owner_user_id]
+    );
+    
+    const is_subscribed = ownerResult.rows.length > 0 ? ownerResult.rows[0].subscribe_user : false;
+    
+    // Check if request already exists
+    const existingRequest = await pool.query(
+      "SELECT id FROM referral_requests WHERE owner_user_id = $1 AND is_accepted = false AND rejected_at IS NULL",
+      [owner_user_id]
+    );
+    
+    if (existingRequest.rows.length > 0) {
+      return res.status(400).json({ error: "Allaqachon tasdiqlanish kutilmoqda" });
+    }
+    
+    // Create new request with subscription status
+    const insertResult = await pool.query(
+      `INSERT INTO referral_requests 
+       (owner_user_id, owner_username, referrer_user_id, referrer_username, subscribe_referrer) 
+       VALUES ($1, $2, $3, $4, $5) 
+       RETURNING *`,
+      [owner_user_id, owner_username, referrer.user_id, referrer.username, is_subscribed]
+    );
+    
+    console.log(`📝 Referral request yaratiлди: ${owner_username} (${owner_user_id}) -> ${referrer.username}, Subscribe: ${is_subscribed}`);
+    res.json({ success: true, request: insertResult.rows[0] });
+  } catch (err) {
+    console.error("❌ POST referral-requests ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// PATCH - Admin approve referral request
+app.patch("/api/admin/referral-requests/:id/approve", adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Get the request details
+    const request = await pool.query(
+      "SELECT * FROM referral_requests WHERE id = $1",
+      [id]
+    );
+    
+    if (request.rows.length === 0) {
+      return res.status(404).json({ error: "Request topilmadi" });
+    }
+    
+    const req_data = request.rows[0];
+    
+    // Check if already processed
+    if (req_data.is_accepted || req_data.rejected_at) {
+      return res.status(400).json({ error: "Bu so'rov allaqachon qayta ishlangi" });
+    }
+    
+    // Update request to accepted
+    await pool.query(
+      "UPDATE referral_requests SET is_accepted = true WHERE id = $1",
+      [id]
+    );
+    
+    // Update user's referrer_user_id
+    await pool.query(
+      "UPDATE users SET referrer_user_id = $1 WHERE user_id = $2",
+      [req_data.referrer_user_id, req_data.owner_user_id]
+    );
+    
+    console.log(`✅ Admin: Referral tasdiqlandi - ${req_data.owner_username} -> ${req_data.referrer_username}`);
+    res.json({ success: true, message: "Referral tasdiqlandi" });
+  } catch (err) {
+    console.error("❌ PATCH approve referral ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// PATCH - Admin reject referral request
+app.patch("/api/admin/referral-requests/:id/reject", adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    const request = await pool.query(
+      "SELECT * FROM referral_requests WHERE id = $1",
+      [id]
+    );
+    
+    if (request.rows.length === 0) {
+      return res.status(404).json({ error: "Request topilmadi" });
+    }
+    
+    const req_data = request.rows[0];
+    
+    if (req_data.is_accepted || req_data.rejected_at) {
+      return res.status(400).json({ error: "Bu so'rov allaqachon qayta ishlangi" });
+    }
+    
+    // Update request to rejected
+    await pool.query(
+      "UPDATE referral_requests SET rejected_at = NOW() WHERE id = $1",
+      [id]
+    );
+    
+    console.log(`❌ Admin: Referral rad etildi - ${req_data.owner_username} <- ${req_data.referrer_username}. Sabab: ${reason || "Ko'rsatilmagan"}`);
+    res.json({ success: true, message: "Referral rad etildi" });
+  } catch (err) {
+    console.error("❌ PATCH reject referral ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
 // 7️⃣ Original claim endpoint (Admin uchun)
 app.post("/api/referral/claim", authLimiter, telegramAuth, async (req, res) => {
   try {
