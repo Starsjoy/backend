@@ -3598,11 +3598,14 @@ app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) =
         `INSERT INTO users (name, username, user_id, referral_code, referrer_user_id, language)
          VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *`,
-        [tgName, tgUsername, tgUserId, new_code, referrer_user_id, language || 'uz']
+        [tgName, tgUsername, tgUserId, new_code, null, language || 'uz']
       );
       console.log(
         `👤 Yangi user ro'yxatdan o'tdi: ${tgUsername} (name: ${tgName}, user_id: ${tgUserId}, referrer_user_id: ${referrer_user_id || "yo'q"}, language: ${language || 'uz'})`
       );
+      
+      // ⚠️ NOTE: referrer_user_id is NOT SET here! Will be set only after admin approval via referral_requests
+      console.log(`ℹ️ Referrer user_id set bo'lmadi - admin approval-ni kutilmoqda (referral_requests via)`);
       
       // 📝 Agar referrer mavjud bo'lsa - AUTOMATICALLY referral_request yaratiш
       if (referrer_user_id) {
@@ -4367,6 +4370,123 @@ app.patch("/api/admin/referral-requests/:id/reject", adminAuth, async (req, res)
     res.json({ success: true, message: "Referral rad etildi" });
   } catch (err) {
     console.error("❌ PATCH reject referral ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// 📋 Get specific user info
+app.get("/api/admin/user/:userId", adminAuth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const user = await pool.query(
+      "SELECT id, username, user_id, name, referral_balance, total_referrals FROM users WHERE user_id = $1",
+      [userId]
+    );
+    if (user.rows.length === 0) {
+      return res.status(404).json({ error: "Foydalanuvchi topilmadi" });
+    }
+    res.json(user.rows[0]);
+  } catch (err) {
+    console.error("❌ GET user info ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// 👥 Get user's referrals list
+app.get("/api/admin/user/:userId/referrals", adminAuth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const referrals = await pool.query(
+      "SELECT id, username, user_id, referral_balance, subscribe_user, created_at FROM users WHERE referrer_user_id = $1 ORDER BY created_at DESC",
+      [userId]
+    );
+    res.json(referrals.rows);
+  } catch (err) {
+    console.error("❌ GET user referrals ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+// 🗑️ Remove referral relationship
+app.post("/api/admin/user/:userId/remove-referrer", adminAuth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`🗑️  REFERRAL O'CHIRISH JARAYONI - BACKEND`);
+    console.log(`${'='.repeat(60)}`);
+    console.log(`📋 O'chiriladigan user_id: ${userId}`);
+    
+    // Get the user info before deletion for logging
+    const userBefore = await pool.query(
+      "SELECT username, referrer_user_id, id FROM users WHERE user_id = $1",
+      [userId]
+    );
+    
+    if (userBefore.rows.length === 0) {
+      console.log(`❌ Foydalanuvchi topilmadi (user_id: ${userId})`);
+      return res.status(404).json({ error: "Foydalanuvchi topilmadi" });
+    }
+    
+    const userInfo = userBefore.rows[0];
+    console.log(`👤 Foydalanuvchi: @${userInfo.username} (DB ID: ${userInfo.id})`);
+    console.log(`📊 Hozirgi referrer_user_id: ${userInfo.referrer_user_id || "NULL"}`);
+    
+    // Clear referrer_user_id
+    console.log(`⏳ STEP 1: UPDATE users SET referrer_user_id = NULL WHERE user_id = ${userId}`);
+    const updateResult = await pool.query(
+      "UPDATE users SET referrer_user_id = NULL WHERE user_id = $1",
+      [userId]
+    );
+    console.log(`✅ STEP 1 NATIJASI: ${updateResult.rowCount} qator o'zgartirildi`);
+    
+    // Check referral_requests records
+    const refReqs = await pool.query(
+      "SELECT id, owner_user_id, owner_username FROM referral_requests WHERE owner_user_id = $1",
+      [userId]
+    );
+    console.log(`📋 STEP 2: referral_requests jadvalida: ${refReqs.rows.length} ta yozuv topildi`);
+    
+    if (refReqs.rows.length > 0) {
+      console.log(`🔍 O'chiriladigan referral_requests:`);
+      refReqs.rows.forEach(req => {
+        console.log(`   - ID: ${req.id}, owner: ${req.owner_username}`);
+      });
+      
+      // Delete from referral_requests if exists
+      console.log(`⏳ STEP 2: DELETE FROM referral_requests WHERE owner_user_id = ${userId}`);
+      const deleteResult = await pool.query(
+        "DELETE FROM referral_requests WHERE owner_user_id = $1",
+        [userId]
+      );
+      console.log(`✅ STEP 2 NATIJASI: ${deleteResult.rowCount} ta yozuv o'chirildi`);
+    } else {
+      console.log(`⚠️  STEP 2: referral_requests da yozuv yo'q, o'chirilishga hech narsa yo'q`);
+    }
+    
+    // Verify the change
+    const userAfter = await pool.query(
+      "SELECT referrer_user_id FROM users WHERE user_id = $1",
+      [userId]
+    );
+    const newValue = userAfter.rows[0]?.referrer_user_id;
+    console.log(`📊 VERIFIKATSIYA: Yangi referrer_user_id qiymati: ${newValue || "NULL"}`);
+    
+    console.log(`\n✅ REFERRAL O'CHIRISH MUVAFFAQIYATLI!`);
+    console.log(`${'='.repeat(60)}\n`);
+    
+    res.json({ 
+      success: true, 
+      message: "Referral o'chirildi",
+      details: {
+        userId,
+        username: userInfo.username,
+        referrer_user_id_cleared: true,
+        referral_requests_deleted: refReqs.rows.length
+      }
+    });
+  } catch (err) {
+    console.error(`❌ POST remove referral ERROR:`, err);
     res.status(500).json({ error: "Server xato" });
   }
 });
