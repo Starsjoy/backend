@@ -375,8 +375,48 @@ bot.action(/^broadcast_confirm_(.+)$/, async (ctx) => {
     return await ctx.answerCbQuery('❌ Xabar topilmadi', { show_alert: true });
   }
 
+  const updateBroadcastMessage = async (text, extra = {}) => {
+    const isMediaMessage = Boolean(
+      ctx.callbackQuery?.message?.photo ||
+      ctx.callbackQuery?.message?.video ||
+      ctx.callbackQuery?.message?.document
+    );
+
+    try {
+      if (isMediaMessage) {
+        return await ctx.editMessageCaption(text, extra);
+      }
+      return await ctx.editMessageText(text, extra);
+    } catch (editErr) {
+      const description = editErr?.response?.description || editErr?.message || '';
+
+      // If original message type doesn't match edit method, fallback safely.
+      if (description.includes('there is no text in the message to edit')) {
+        try {
+          return await ctx.editMessageCaption(text, extra);
+        } catch (_) {
+          return await ctx.reply(text, extra);
+        }
+      }
+
+      if (description.includes('there is no caption in the message to edit')) {
+        try {
+          return await ctx.editMessageText(text, extra);
+        } catch (_) {
+          return await ctx.reply(text, extra);
+        }
+      }
+
+      if (description.includes('message is not modified')) {
+        return;
+      }
+
+      return await ctx.reply(text, extra);
+    }
+  };
+
   await ctx.answerCbQuery('⏳ Yuborilmoqda...');
-  await ctx.editMessageText('⏳ *Broadcast boshlanmoqda...*', { parse_mode: 'Markdown' });
+  await updateBroadcastMessage('⏳ *Broadcast boshlanmoqda...*', { parse_mode: 'Markdown' });
 
   // Barcha user_id larni olish
   try {
@@ -384,7 +424,7 @@ bot.action(/^broadcast_confirm_(.+)$/, async (ctx) => {
     const userIds = result.rows.map(r => String(r.user_id)).filter(id => id && id.length > 0);
     
     if (userIds.length === 0) {
-      await ctx.editMessageText('❌ Foydalanuvchilar topilmadi');
+      await updateBroadcastMessage('❌ Foydalanuvchilar topilmadi');
       broadcastState.delete(userId);
       return;
     }
@@ -431,7 +471,7 @@ bot.action(/^broadcast_confirm_(.+)$/, async (ctx) => {
 
     broadcastState.delete(userId);
 
-    await ctx.editMessageText(
+    await updateBroadcastMessage(
       `✅ *Broadcast yakunlandi!*
 
 📊 *Statistika:*
@@ -445,7 +485,7 @@ bot.action(/^broadcast_confirm_(.+)$/, async (ctx) => {
 
   } catch (err) {
     console.error('Broadcast error:', err);
-    await ctx.editMessageText('❌ Broadcast xatolik: ' + err.message);
+    await updateBroadcastMessage('❌ Broadcast xatolik: ' + err.message);
     broadcastState.delete(userId);
   }
 });
