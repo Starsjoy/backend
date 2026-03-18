@@ -5392,7 +5392,7 @@ app.post("/api/v2/order/create", telegramAuth, async (req, res) => {
     console.log("\n=============== 📦 UNIFIED ORDER CREATE ===============");
     console.log("📥 Keldi:", req.body);
     
-    const {
+    let {
       order_type,       // 'stars', 'premium', 'gift'
       recipient_username,
       recipient,        // provider recipient ID
@@ -5416,9 +5416,12 @@ app.post("/api/v2/order/create", telegramAuth, async (req, res) => {
       return res.status(400).json({ error: "recipient kerak" });
     }
     
-    if (!type_amount || type_amount <= 0) {
-      return res.status(400).json({ error: "type_amount kerak va 0 dan katta bo'lishi kerak" });
+    if (!type_amount || type_amount <= 0 || !Number.isInteger(Number(type_amount))) {
+      return res.status(400).json({ error: "type_amount butun son bo'lishi kerak va 0 dan katta bo'lishi kerak" });
     }
+    
+    // type_amount ni aniq raqam (number) formatiga o'tkazib olish
+    type_amount = Number(type_amount);
     
     // Narxni hisoblash
     let baseSum = 0;
@@ -5461,7 +5464,14 @@ app.post("/api/v2/order/create", telegramAuth, async (req, res) => {
         return res.status(400).json({ error: "gift_id kerak" });
       }
       
-      // Gift narxini stars asosida hisoblash
+      const serverStars = GIFT_STARS_MAP[gift_id];
+      if (!serverStars) {
+        return res.status(400).json({ error: "Noto'g'ri gift ID yuborildi" });
+      }
+
+      // 🛡️ XAVFSIZLIK: Mijoz yuborgan type_amount ga ishonmasdan, 
+      // bazadagi (GIFT_STARS_MAP) haqiqiy narx (stars) bo'yicha hisoblaymiz.
+      type_amount = serverStars;
       baseSum = type_amount * STARS_PRICE_PER_UNIT;
     }
     
