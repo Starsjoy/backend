@@ -1323,6 +1323,69 @@ app.delete("/api/admin/notifications/:id", adminAuth, async (req, res) => {
 });
 
 // ======================
+// 🎁 ADMIN: PROMO CODES
+// ======================
+app.get("/api/admin/promocodes", adminAuth, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM promocodes ORDER BY created_at DESC`);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("❌ GET /api/admin/promocodes ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+app.post("/api/admin/promocodes", adminAuth, async (req, res) => {
+  try {
+    const { target_type, target_amount, discount_percent, usage_limit } = req.body;
+    
+    // Generate 6-character random code (letters and numbers)
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+
+    const targAmt = target_amount ? parseInt(target_amount) : null;
+    
+    await pool.query(
+      `INSERT INTO promocodes (code, target_type, target_amount, discount_percent, usage_limit)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [code, target_type, targAmt, discount_percent, usage_limit || 1]
+    );
+
+    res.json({ success: true, message: "Promokod yaratildi", code });
+  } catch (err) {
+    console.error("❌ POST /api/admin/promocodes ERROR:", err);
+    if(err.code === '23505') return res.status(400).json({ error: "Bunday kod allaqachon mavjud" });
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+app.delete("/api/admin/promocodes/:id", adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query(`DELETE FROM promocodes WHERE id = $1`, [id]);
+    res.json({ success: true, message: "O'chirildi" });
+  } catch (err) {
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+app.put("/api/admin/promocodes/:id/toggle", adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `UPDATE promocodes SET is_active = NOT is_active WHERE id = $1 RETURNING is_active`,
+      [id]
+    );
+    res.json({ success: true, is_active: result.rows[0].is_active });
+  } catch (err) {
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+// ======================
 // 🛡️ GLOBAL ERROR HANDLERS — Process crash oldini olish
 // ======================
 process.on('unhandledRejection', (reason, promise) => {
@@ -1378,11 +1441,42 @@ pool.on('connect', () => {
       gift_id TEXT,
       gift_anonymous BOOLEAN DEFAULT false,
       gift_comment TEXT,
+      applied_promocode TEXT,
+      discount_amount INTEGER DEFAULT 0,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'Asia/Tashkent')
     );
   `);
+  // If table exists but columns are missing, add them safely
+  try {
+    await pool.query(`ALTER TABLE orders ADD COLUMN applied_promocode TEXT`);
+  } catch (e) { /* ignore if exists */ }
+  try {
+    await pool.query(`ALTER TABLE orders ADD COLUMN discount_amount INTEGER DEFAULT 0`);
+  } catch (e) { /* ignore if exists */ }
+
   console.log("✅ Table 'orders' ready (unified)");
 })();
+
+// ======================
+// 🎁 PROMOCODES TABLE (Chegirmalar uchun)
+// ======================
+(async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS promocodes (
+      id SERIAL PRIMARY KEY,
+      code TEXT UNIQUE NOT NULL,
+      target_type VARCHAR(32) NOT NULL, -- 'stars', 'gift', 'premium', yoki 'all'
+      target_amount INTEGER, -- ma'lum bir miqdor uchun. NULL = barchasi uchun
+      discount_percent INTEGER NOT NULL, -- fayz, masalan: 10
+      usage_limit INTEGER DEFAULT 1, -- Necha marta ishlashi mumkin
+      used_count INTEGER DEFAULT 0, -- Hozirgacha necha marta ishlatilgani
+      is_active BOOLEAN DEFAULT true, -- Admin vaqtinchalik o'chirishi mumkin
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'Asia/Tashkent')
+    );
+  `);
+  console.log("✅ Table 'promocodes' ready");
+})();
+
 // ======================
 // 🆕 REFERRAL SYSTEM TABLES
 // ======================
@@ -1942,12 +2036,63 @@ app.post("/api/search", searchLimiter, telegramAuth, async (req, res) => {
     });
   }
 });
+
+// ======================
+// 🎁 PROMOCODE CHECK
+// ======================
+app.post("/api/promocode/check", async (req, res) => {
+  try {
+    const { code, type, amount, price } = req.body;
+    // type: 'stars', 'gift', 'premium' vs target_type (barchasi uchun 'all')
+
+    if (!code || !type || !price) {
+      return res.status(400).json({ error: "Ma'lumot to'liq emas" });
+    }
+
+    const { rows } = await pool.query(`SELECT * FROM promocodes WHERE code = $1`, [code]);
+    if (rows.length === 0) return res.status(404).json({ error: "Bunday promokod mavjud emas" });
+
+    const promo = rows[0];
+
+    // Tekshiruvlar
+    if (!promo.is_active) return res.status(400).json({ error: "Ushbu promokod faol emas" });
+    if (promo.used_count >= promo.usage_limit) return res.status(400).json({ error: "Ushbu promokodning muddati tugagan" });
+    
+    // Type tekshiruvi: 'all' bo'lsa hammaga ishlaydi. 
+    if (promo.target_type !== 'all' && promo.target_type !== type) {
+      return res.status(400).json({ error: `Ushbu promokod faqat ${promo.target_type} uchun mo'ljallangan` });
+    }
+
+    // Amount tekshiruvi (agar ko'rsatilgan bo'lsa)
+    if (promo.target_amount !== null && promo.target_amount !== parseInt(amount)) {
+      return res.status(400).json({ error: `Ushbu promokod faqat ${promo.target_amount} ${type} uchu mo'ljallangan` });
+    }
+
+    // Hammasi joyida, narxni hisoblaymiz
+    const discountAmount = Math.floor(price * (promo.discount_percent / 100));
+    const newPrice = price - discountAmount;
+
+    res.json({
+      success: true,
+      discount_percent: promo.discount_percent,
+      discount_amount: discountAmount,
+      new_price: newPrice,
+      message: `${promo.discount_percent}% chegirma qabul qilindi!`
+    });
+
+  } catch(err) {
+    console.error("❌ /api/promocode/check ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+
 // ======================
 // 2️⃣ Order yaratish — YANGI orders jadvaliga yozadi
 // ======================
 app.post("/api/order", telegramAuth, async (req, res) => {
   try {
-    const { username, recipient, stars, amount: requestedAmount, discount_package_id } = req.body;
+    const { username, recipient, stars, amount: requestedAmount, discount_package_id, applied_promocode } = req.body;
     // ⚠️ Endi recipient majburiy!
     if (!username || !recipient || !stars) {
       return res.status(400).json({
@@ -2136,15 +2281,47 @@ app.post("/api/order", telegramAuth, async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(1001)'); // Stars uchun alohida lock
+
+      let finalAmount = amount;
+      let finalDiscountAmount = 0;
+      let promoCodeValid = null;
+
+      // 🎁 PROMOCODE QO'LLASH (agar yuborilgan bo'lsa)
+      if (applied_promocode) {
+        const promoRes = await client.query(
+          `SELECT * FROM promocodes WHERE code = $1 FOR UPDATE`,
+          [applied_promocode]
+        );
+        if (promoRes.rows.length > 0) {
+          const promo = promoRes.rows[0];
+          // Validatsiya (type, amount, is_active, limits)
+          if (promo.is_active && promo.used_count < promo.usage_limit) {
+            if (promo.target_type === 'all' || promo.target_type === 'stars') {
+              if (promo.target_amount === null || promo.target_amount === starsNum) {
+                // Yaroqli! Apply discount
+                finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
+                finalAmount = finalAmount - finalDiscountAmount;
+                promoCodeValid = promo.code;
+                
+                // Limitni oshirish
+                await client.query(
+                  `UPDATE promocodes SET used_count = used_count + 1 WHERE id = $1`,
+                  [promo.id]
+                );
+              }
+            }
+          }
+        }
+      }
       
-      const uniqueSum = amount;
+      const uniqueSum = finalAmount;
       
       const orderId = crypto.randomUUID();
       const result = await client.query(
-        `INSERT INTO orders (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, created_at)
-         VALUES ($1, $2, $3, $4, 'stars', $5, $6, 'card', 'pending', 'pending', NOW())
+        `INSERT INTO orders (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, applied_promocode, discount_amount, created_at)
+         VALUES ($1, $2, $3, $4, 'stars', $5, $6, 'card', 'pending', 'pending', $7, $8, NOW())
          RETURNING *`,
-        [orderId, ownerUserId, cleanUsername, recipient, starsNum, uniqueSum]
+        [orderId, ownerUserId, cleanUsername, recipient, starsNum, uniqueSum, promoCodeValid, finalDiscountAmount]
       );
       
       await client.query('COMMIT');
@@ -2697,7 +2874,7 @@ app.post("/api/premium/search", searchLimiter, telegramAuth, async (req, res) =>
 app.post("/api/premium", telegramAuth, async (req, res) => {
   try {
     console.log("\n=============== 🧾 PREMIUM ORDER YARATILMOQDA ===============");
-    const { username, recipient, months } = req.body;
+    const { username, recipient, months, applied_promocode } = req.body;
     console.log("📥 Keldi:", req.body);
     if (!username || !recipient || !months) {
       console.log("❌ Parametrlar yetarli emas");
@@ -2799,17 +2976,46 @@ app.post("/api/premium", telegramAuth, async (req, res) => {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(1002)');
       
+      let finalAmount = slotBasedPrice;
+      let finalDiscountAmount = 0;
+      let promoCodeValid = null;
+
+      // 🎁 PROMOCODE QO'LLASH
+      if (applied_promocode) {
+        const promoRes = await client.query(
+          `SELECT * FROM promocodes WHERE code = $1 FOR UPDATE`,
+          [applied_promocode]
+        );
+        if (promoRes.rows.length > 0) {
+          const promo = promoRes.rows[0];
+          if (promo.is_active && promo.used_count < promo.usage_limit) {
+            if (promo.target_type === 'all' || promo.target_type === 'premium') {
+              if (promo.target_amount === null || promo.target_amount === months) {
+                finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
+                finalAmount = finalAmount - finalDiscountAmount;
+                promoCodeValid = promo.code;
+                
+                await client.query(
+                  `UPDATE promocodes SET used_count = used_count + 1 WHERE id = $1`,
+                  [promo.id]
+                );
+              }
+            }
+          }
+        }
+      }
+
       const orderId = crypto.randomUUID();
       
-      console.log("✅ Slot-based narx:", slotBasedPrice);
+      console.log("✅ Slot-based narx:", finalAmount);
       console.log("📝 Bazaga yozilmoqda...");
 
       // 🟦 YANGI orders jadvaliga yozish
       const result = await client.query(
-        `INSERT INTO orders (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, created_at)
-         VALUES ($1, $2, $3, $4, 'premium', $5, $6, 'card', 'pending', 'pending', NOW())
+        `INSERT INTO orders (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, applied_promocode, discount_amount, created_at)
+         VALUES ($1, $2, $3, $4, 'premium', $5, $6, 'card', 'pending', 'pending', $7, $8, NOW())
          RETURNING *`,
-        [orderId, ownerUserId, clean, recipient, months, slotBasedPrice]
+        [orderId, ownerUserId, clean, recipient, months, finalAmount, promoCodeValid, finalDiscountAmount]
       );
       
       await client.query('COMMIT');
@@ -4770,7 +4976,7 @@ const ALLOWED_GIFT_IDS = [
   "5170564780938756245", "6028601630662853006",
   "5922558454332916696", "5801108895304779062",
   "5800655655995968830", "5866352046986232958",
-  "5956217000635139069", "5168043875654172773",
+  "5956217000635139069", "5893356958802511476", "5168043875654172773",
   "5170690322832818290", "5170521118301225164",
 ];
 const GIFT_PRICE_MAP = { 15: 4000, 25: 6000, 50: 12000, 100: 24000 };
@@ -4781,7 +4987,7 @@ const GIFT_STARS_MAP = {
   "5170564780938756245": 50, "6028601630662853006": 50,
   "5922558454332916696": 50, "5801108895304779062": 50,
   "5800655655995968830": 50, "5866352046986232958": 50,
-  "5956217000635139069": 50, "5168043875654172773": 100,
+  "5956217000635139069": 50, "5893356958802511476": 50, "5168043875654172773": 100,
   "5170690322832818290": 100, "5170521118301225164": 100,
 };
 // ======================
@@ -4899,11 +5105,41 @@ app.post("/api/gift/order", telegramAuth, async (req, res) => {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(1003)'); // Gift uchun alohida lock
       
+      let finalAmount = slotBasedPrice;
+      let finalDiscountAmount = 0;
+      let promoCodeValid = null;
+      const { applied_promocode } = req.body;
+
+      // 🎁 PROMOCODE QO'LLASH
+      if (applied_promocode) {
+        const promoRes = await client.query(
+          `SELECT * FROM promocodes WHERE code = $1 FOR UPDATE`,
+          [applied_promocode]
+        );
+        if (promoRes.rows.length > 0) {
+          const promo = promoRes.rows[0];
+          if (promo.is_active && promo.used_count < promo.usage_limit) {
+            if (promo.target_type === 'all' || promo.target_type === 'gift') {
+              if (promo.target_amount === null || promo.target_amount === serverStars) {
+                finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
+                finalAmount = finalAmount - finalDiscountAmount;
+                promoCodeValid = promo.code;
+                
+                await client.query(
+                  `UPDATE promocodes SET used_count = used_count + 1 WHERE id = $1`,
+                  [promo.id]
+                );
+              }
+            }
+          }
+        }
+      }
+
       const orderId = crypto.randomUUID();
       const result = await client.query(
         `INSERT INTO orders
-         (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, gift_id, gift_anonymous, gift_comment, created_at)
-         VALUES ($1, $2, $3, $4, 'gift', $5, $6, 'card', 'pending', 'pending', $7, $8, $9, NOW())
+         (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, gift_id, gift_anonymous, gift_comment, applied_promocode, discount_amount, created_at)
+         VALUES ($1, $2, $3, $4, 'gift', $5, $6, 'card', 'pending', 'pending', $7, $8, $9, $10, $11, NOW())
          RETURNING *`,
         [
           orderId,
@@ -4911,10 +5147,12 @@ app.post("/api/gift/order", telegramAuth, async (req, res) => {
           tgUser?.username || 'unknown',
           cleanUsername,
           serverStars,
-          slotBasedPrice,
+          finalAmount,
           giftId,
           anonymous === true,
           comment && comment.trim() ? comment.trim() : null,
+          promoCodeValid,
+          finalDiscountAmount
         ]
       );
       await client.query('COMMIT');
