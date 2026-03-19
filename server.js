@@ -2701,11 +2701,17 @@ async function processReferralBonus(username, stars, transactionId) {
       return;
     }
     const referrerUsername = referrerResult.rows[0].username;
-    // Bonus calculation: har 50 star uchun 5 star
-    const bonusStars = Math.floor(stars / 50) * 5;
-    if (bonusStars <= 0) {
-      return;
-    }
+
+    // Faqat 1 marta bonus berilishi tekshiruvi:
+    const checkGiven = await pool.query(
+      `SELECT id FROM referral_earnings WHERE referrer_username = $1 AND referee_username = $2 LIMIT 1`,
+      [referrerUsername, clean]
+    );
+    if (checkGiven.rows.length > 0) return; // Oldin shu odamdan bonus olgan
+
+    // Istalgan stars olinganda qat'iy 5 stars beriladi
+    const bonusStars = 5;
+
     // Referrer balance-ga qo'shish (user_id orqali)
     await pool.query(
       `UPDATE users 
@@ -2783,6 +2789,14 @@ async function processPremiumReferralBonus(username, transactionId) {
     );
     if (referrerResult.rows.length === 0) return;
     const referrerUsername = referrerResult.rows[0].username;
+
+    // Faqat 1 marta bonus berilishi tekshiruvi:
+    const checkGiven = await pool.query(
+      `SELECT id FROM referral_earnings WHERE referrer_username = $1 AND referee_username = $2 LIMIT 1`,
+      [referrerUsername, clean]
+    );
+    if (checkGiven.rows.length > 0) return; // Oldin shu odamdan bonus olgan
+
     const bonusStars = 15;
     // Referrer balance-ga qo'shish (user_id orqali)
     await pool.query(
@@ -6191,10 +6205,16 @@ async function processReferralBonusByUserId(userId, stars, orderId) {
     if (referrerResult.rows.length === 0) return;
     
     const referrerUsername = referrerResult.rows[0].username;
+
+    // Faqat 1 marta bonus berilishi tekshiruvi
+    const checkGiven = await pool.query(
+      `SELECT id FROM referral_earnings WHERE referrer_username = $1 AND referee_username = $2 LIMIT 1`,
+      [referrerUsername, username]
+    );
+    if (checkGiven.rows.length > 0) return;
     
-    // Bonus hisoblash: har 50 star uchun 5 star
-    const bonusStars = Math.floor(stars / 50) * 5;
-    if (bonusStars <= 0) return;
+    // Istalgan stars olinganda qat'iy 5 stars beriladi
+    const bonusStars = 5;
     
     // Referrer balance yangilash
     await pool.query(
@@ -6241,6 +6261,14 @@ async function processPremiumReferralBonusByUserId(userId, orderId) {
     if (referrerResult.rows.length === 0) return;
     
     const referrerUsername = referrerResult.rows[0].username;
+
+    // Faqat 1 marta bonus berilishi tekshiruvi
+    const checkGiven = await pool.query(
+      `SELECT id FROM referral_earnings WHERE referrer_username = $1 AND referee_username = $2 LIMIT 1`,
+      [referrerUsername, username]
+    );
+    if (checkGiven.rows.length > 0) return;
+
     const bonusStars = 15;
     
     await pool.query(
