@@ -1337,13 +1337,17 @@ app.get("/api/admin/promocodes", adminAuth, async (req, res) => {
 
 app.post("/api/admin/promocodes", adminAuth, async (req, res) => {
   try {
-    const { target_type, target_amount, discount_percent, usage_limit } = req.body;
+    const { code, target_type, target_amount, discount_percent, usage_limit } = req.body;
     
-    // Generate 6-character random code (letters and numbers)
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let code = '';
-    for (let i = 0; i < 6; i++) {
-      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    // Use manually provided code from AdminPanel
+    let finalCode = code;
+    if (!finalCode) {
+      // Fallback in case it's not provided
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      finalCode = '';
+      for (let i = 0; i < 6; i++) {
+        finalCode += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
     }
 
     const targAmt = target_amount ? parseInt(target_amount) : null;
@@ -1351,10 +1355,10 @@ app.post("/api/admin/promocodes", adminAuth, async (req, res) => {
     await pool.query(
       `INSERT INTO promocodes (code, target_type, target_amount, discount_percent, usage_limit)
        VALUES ($1, $2, $3, $4, $5)`,
-      [code, target_type, targAmt, discount_percent, usage_limit || 1]
+      [finalCode, target_type, targAmt, discount_percent, usage_limit || 1]
     );
 
-    res.json({ success: true, message: "Promokod yaratildi", code });
+    res.json({ success: true, message: "Promokod yaratildi", code: finalCode });
   } catch (err) {
     console.error("❌ POST /api/admin/promocodes ERROR:", err);
     if(err.code === '23505') return res.status(400).json({ error: "Bunday kod allaqachon mavjud" });
@@ -1362,23 +1366,24 @@ app.post("/api/admin/promocodes", adminAuth, async (req, res) => {
   }
 });
 
-app.delete("/api/admin/promocodes/:id", adminAuth, async (req, res) => {
+app.delete("/api/admin/promocodes/:code", adminAuth, async (req, res) => {
   try {
-    const { id } = req.params;
-    await pool.query(`DELETE FROM promocodes WHERE id = $1`, [id]);
+    const { code } = req.params;
+    await pool.query(`DELETE FROM promocodes WHERE code = $1`, [code]);
     res.json({ success: true, message: "O'chirildi" });
   } catch (err) {
     res.status(500).json({ error: "Server xatosi" });
   }
 });
 
-app.put("/api/admin/promocodes/:id/toggle", adminAuth, async (req, res) => {
+app.put("/api/admin/promocodes/:code/toggle", adminAuth, async (req, res) => {
   try {
-    const { id } = req.params;
+    const { code } = req.params;
     const result = await pool.query(
-      `UPDATE promocodes SET is_active = NOT is_active WHERE id = $1 RETURNING is_active`,
-      [id]
+      `UPDATE promocodes SET is_active = NOT is_active WHERE code = $1 RETURNING is_active`,
+      [code]
     );
+    if(result.rows.length === 0) return res.status(404).json({error: "Pramakod topilmadi"});
     res.json({ success: true, is_active: result.rows[0].is_active });
   } catch (err) {
     res.status(500).json({ error: "Server xatosi" });
