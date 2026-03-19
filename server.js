@@ -402,7 +402,7 @@ setInterval(async () => {
       WHERE status = 'pending' 
         AND payment_status = 'pending'
         AND created_at < NOW() - INTERVAL '5 minutes'
-      RETURNING id, summ
+      RETURNING id, summ, applied_promocode
     `);
     
     if (expireResult.rows.length > 0) {
@@ -412,6 +412,13 @@ setInterval(async () => {
         globalUsedPrices.delete(row.summ);
         releasePriceSlotByOrderId(row.id);
         releaseDiscountPriceSlotByOrderId(row.id);
+
+        if (row.applied_promocode) {
+          await pool.query(
+            `UPDATE promocodes SET used_count = GREATEST(used_count - 1, 0) WHERE code = $1`,
+            [row.applied_promocode]
+          );
+        }
       }
     }
     
@@ -2045,10 +2052,11 @@ app.post("/api/search", searchLimiter, telegramAuth, async (req, res) => {
 // ======================
 // 🎁 PROMOCODE CHECK
 // ======================
-app.post("/api/promocode/check", async (req, res) => {
+app.post("/api/promocode/check", telegramAuth, async (req, res) => {
   try {
     const { code, type, amount, price } = req.body;
     // type: 'stars', 'gift', 'premium' vs target_type (barchasi uchun 'all')
+    const userId = req.telegramUser?.id ? String(req.telegramUser.id) : null;
 
     if (!code || !type || !price) {
       return res.status(400).json({ error: "Ma'lumot to'liq emas" });
@@ -2070,7 +2078,18 @@ app.post("/api/promocode/check", async (req, res) => {
 
     // Amount tekshiruvi (agar ko'rsatilgan bo'lsa)
     if (promo.target_amount !== null && promo.target_amount !== parseInt(amount)) {
-      return res.status(400).json({ error: `Ushbu promokod faqat ${promo.target_amount} ${type} uchu mo'ljallangan` });
+      return res.status(400).json({ error: `Ushbu promokod faqat ${promo.target_amount} ${type} uchun mo'ljallangan` });
+    }
+
+    // Foydalanuvchi oldin ishlatganligini tekshirish (1 marta ruxsat berish)
+    if (userId) {
+      const userUsage = await pool.query(
+        `SELECT id FROM orders WHERE owner_user_id = $1 AND applied_promocode = $2 AND status IN ('success', 'pending', 'processing') LIMIT 1`,
+        [userId, code]
+      );
+      if (userUsage.rows.length > 0) {
+        return res.status(400).json({ error: "Siz ushbu promokoddan foydalangansiz yoki faol to'lovingiz bor" });
+      }
     }
 
     // Hammasi joyida, narxni hisoblaymiz
@@ -2303,16 +2322,25 @@ app.post("/api/order", telegramAuth, async (req, res) => {
           if (promo.is_active && promo.used_count < promo.usage_limit) {
             if (promo.target_type === 'all' || promo.target_type === 'stars') {
               if (promo.target_amount === null || promo.target_amount === starsNum) {
-                // Yaroqli! Apply discount
-                finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
-                finalAmount = finalAmount - finalDiscountAmount;
-                promoCodeValid = promo.code;
                 
-                // Limitni oshirish
-                await client.query(
-                  `UPDATE promocodes SET used_count = used_count + 1 WHERE id = $1`,
-                  [promo.id]
+                // Foydalanuvchi avval ushbu koddan foydalanganmi?
+                const userUsage = await client.query(
+                  `SELECT id FROM orders WHERE owner_user_id = $1 AND applied_promocode = $2 AND status IN ('success', 'pending', 'processing') LIMIT 1`,
+                  [ownerUserId, applied_promocode]
                 );
+
+                if (userUsage.rows.length === 0) {
+                  // Yaroqli! Apply discount
+                  finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
+                  finalAmount = finalAmount - finalDiscountAmount;
+                  promoCodeValid = promo.code;
+                  
+                  // Limitni oshirish
+                  await client.query(
+                    `UPDATE promocodes SET used_count = used_count + 1 WHERE id = $1`,
+                    [promo.id]
+                  );
+                }
               }
             }
           }
@@ -2986,6 +3014,7 @@ app.post("/api/premium", telegramAuth, async (req, res) => {
       let promoCodeValid = null;
 
       // 🎁 PROMOCODE QO'LLASH
+      // 🎁 PROMOCODE
       if (applied_promocode) {
         const promoRes = await client.query(
           `SELECT * FROM promocodes WHERE code = $1 FOR UPDATE`,
@@ -2996,14 +3025,22 @@ app.post("/api/premium", telegramAuth, async (req, res) => {
           if (promo.is_active && promo.used_count < promo.usage_limit) {
             if (promo.target_type === 'all' || promo.target_type === 'premium') {
               if (promo.target_amount === null || promo.target_amount === months) {
-                finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
-                finalAmount = finalAmount - finalDiscountAmount;
-                promoCodeValid = promo.code;
-                
-                await client.query(
-                  `UPDATE promocodes SET used_count = used_count + 1 WHERE id = $1`,
-                  [promo.id]
+
+                const userUsage = await client.query(
+                  `SELECT id FROM orders WHERE owner_user_id = $1 AND applied_promocode = $2 AND status IN ('success', 'pending', 'processing') LIMIT 1`,
+                  [ownerUserId, applied_promocode]
                 );
+
+                if (userUsage.rows.length === 0) {
+                  finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
+                  finalAmount = finalAmount - finalDiscountAmount;
+                  promoCodeValid = promo.code;
+                  
+                  await client.query(
+                    `UPDATE promocodes SET used_count = used_count + 1 WHERE id = $1`,
+                    [promo.id]
+                  );
+                }
               }
             }
           }
@@ -5126,14 +5163,22 @@ app.post("/api/gift/order", telegramAuth, async (req, res) => {
           if (promo.is_active && promo.used_count < promo.usage_limit) {
             if (promo.target_type === 'all' || promo.target_type === 'gift') {
               if (promo.target_amount === null || promo.target_amount === serverStars) {
-                finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
-                finalAmount = finalAmount - finalDiscountAmount;
-                promoCodeValid = promo.code;
                 
-                await client.query(
-                  `UPDATE promocodes SET used_count = used_count + 1 WHERE id = $1`,
-                  [promo.id]
+                const userUsage = await client.query(
+                  `SELECT id FROM orders WHERE owner_user_id = $1 AND applied_promocode = $2 AND status IN ('success', 'pending', 'processing') LIMIT 1`,
+                  [ownerUserId, applied_promocode]
                 );
+
+                if (userUsage.rows.length === 0) {
+                  finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
+                  finalAmount = finalAmount - finalDiscountAmount;
+                  promoCodeValid = promo.code;
+                  
+                  await client.query(
+                    `UPDATE promocodes SET used_count = used_count + 1 WHERE id = $1`,
+                    [promo.id]
+                  );
+                }
               }
             }
           }
