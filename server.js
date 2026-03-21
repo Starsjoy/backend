@@ -307,7 +307,7 @@ async function loadPendingOrdersToCache() {
       SET status = 'expired', payment_status = 'expired'
       WHERE status = 'pending' 
         AND payment_status = 'pending'
-        AND created_at < NOW() - INTERVAL '5 minutes'
+        AND created_at < (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'
       RETURNING id
     `);
     
@@ -317,7 +317,7 @@ async function loadPendingOrdersToCache() {
     
     // Faqat oxirgi 5 daqiqadagi pending orderlarni yuklash
     const result = await pool.query(
-      "SELECT id, summ, order_type, type_amount, created_at FROM orders WHERE status = 'pending' AND payment_status = 'pending' AND created_at >= NOW() - INTERVAL '5 minutes'"
+      "SELECT id, summ, order_type, type_amount, created_at FROM orders WHERE status = 'pending' AND payment_status = 'pending' AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'"
     );
     
     globalUsedPrices.clear();
@@ -401,7 +401,7 @@ setInterval(async () => {
       SET status = 'expired', payment_status = 'expired'
       WHERE status = 'pending' 
         AND payment_status = 'pending'
-        AND created_at < NOW() - INTERVAL '5 minutes'
+        AND created_at < (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'
       RETURNING id, summ, applied_promocode
     `);
     
@@ -424,7 +424,7 @@ setInterval(async () => {
     
     // Bazadan haqiqiy pending orderlarni olish (faqat oxirgi 5 daqiqadagi)
     const result = await pool.query(
-      "SELECT summ FROM orders WHERE status = 'pending' AND payment_status = 'pending' AND created_at >= NOW() - INTERVAL '5 minutes'"
+      "SELECT summ FROM orders WHERE status = 'pending' AND payment_status = 'pending' AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'"
     );
     
     const dbPrices = new Set(result.rows.map(r => r.summ));
@@ -1818,7 +1818,7 @@ app.get("/api/stars/price/:stars", async (req, res) => {
       `SELECT DISTINCT summ FROM orders 
        WHERE order_type IN ('gift', 'premium') 
        AND status = 'pending' AND payment_status = 'pending'
-       AND created_at >= NOW() - INTERVAL '5 minutes'`
+       AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'`
     );
     conflictPrices = new Set(giftPremiumPrices.rows.map(r => r.summ));
   } catch (err) {
@@ -2114,9 +2114,23 @@ app.post("/api/promocode/check", telegramAuth, async (req, res) => {
 // ======================
 // 2️⃣ Order yaratish — YANGI orders jadvaliga yozadi
 // ======================
-app.post("/api/order", telegramAuth, async (req, res) => {
+app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
   try {
     const { username, recipient, stars, amount: requestedAmount, discount_package_id, applied_promocode } = req.body;
+    
+    // Telegram userId orqali pending orderlar sonini tekshirish
+    const maxPendingOrders = 2;
+    const tgUserId = req.telegramUser?.id ? String(req.telegramUser.id) : null;
+    if (tgUserId) {
+        const activeOrdersRes = await pool.query(
+          `SELECT COUNT(*) as count FROM orders WHERE owner_user_id = $1 AND status = 'pending' AND payment_status = 'pending'`,
+          [tgUserId]
+        );
+        if (parseInt(activeOrdersRes.rows[0].count) >= maxPendingOrders) {
+          return res.status(429).json({ error: "Sizda to'lanmagan buyurtmalar mavjud. Iltimos oldin ularni to'lang yoki biroz kuting." });
+        }
+    }
+
     // ⚠️ Endi recipient majburiy!
     if (!username || !recipient || !stars) {
       return res.status(400).json({
@@ -2209,7 +2223,7 @@ app.post("/api/order", telegramAuth, async (req, res) => {
         `SELECT id, summ, created_at FROM orders 
          WHERE order_type = 'stars' AND type_amount = $1 
          AND status = 'pending' AND payment_status = 'pending'
-         AND created_at >= NOW() - INTERVAL '5 minutes'`,
+         AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'`,
         [starsNum]
       );
       
@@ -2237,7 +2251,7 @@ app.post("/api/order", telegramAuth, async (req, res) => {
         `SELECT DISTINCT summ FROM orders 
          WHERE order_type IN ('gift', 'premium') 
          AND status = 'pending' AND payment_status = 'pending'
-         AND created_at >= NOW() - INTERVAL '5 minutes'`
+         AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'`
       );
       const conflictPrices = new Set(giftPremiumPrices.rows.map(r => r.summ));
       
@@ -2918,11 +2932,24 @@ app.post("/api/premium/search", searchLimiter, telegramAuth, async (req, res) =>
 //-----------------------
 // 🧾 PREMIUM ORDER YARATISH
 //-----------------------
-app.post("/api/premium", telegramAuth, async (req, res) => {
+app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
   try {
     console.log("\n=============== 🧾 PREMIUM ORDER YARATILMOQDA ===============");
     const { username, recipient, months, applied_promocode } = req.body;
     console.log("📥 Keldi:", req.body);
+
+    const maxPendingOrders = 2;
+    const tgUserId = req.telegramUser?.id ? String(req.telegramUser.id) : null;
+    if (tgUserId) {
+        const activeOrdersRes = await pool.query(
+          `SELECT COUNT(*) as count FROM orders WHERE owner_user_id = $1 AND status = 'pending' AND payment_status = 'pending'`,
+          [tgUserId]
+        );
+        if (parseInt(activeOrdersRes.rows[0].count) >= maxPendingOrders) {
+          return res.status(429).json({ error: "Sizda to'lanmagan buyurtmalar mavjud. Iltimos oldin ularni to'lang yoki biroz kuting." });
+        }
+    }
+
     if (!username || !recipient || !months) {
       console.log("❌ Parametrlar yetarli emas");
       return res.status(400).json({ error: "username, recipient, months kerak" });
@@ -2955,7 +2982,7 @@ app.post("/api/premium", telegramAuth, async (req, res) => {
       `SELECT id, summ, created_at FROM orders 
        WHERE order_type = 'premium' AND type_amount = $1 
        AND status = 'pending' AND payment_status = 'pending'
-       AND created_at >= NOW() - INTERVAL '5 minutes'`,
+       AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'`,
       [months]
     );
     
@@ -5049,9 +5076,22 @@ const GIFT_STARS_MAP = {
 // ======================
 // 🎁 GIFT ORDER — Order yaratish (to'lov kutish)
 // ======================
-app.post("/api/gift/order", telegramAuth, async (req, res) => {
+app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
   try {
     const { recipientUsername, giftId, anonymous, comment } = req.body;
+
+    const maxPendingOrders = 2;
+    const tgUserId = req.telegramUser?.id ? String(req.telegramUser.id) : null;
+    if (tgUserId) {
+        const activeOrdersRes = await pool.query(
+          `SELECT COUNT(*) as count FROM orders WHERE owner_user_id = $1 AND status = 'pending' AND payment_status = 'pending'`,
+          [tgUserId]
+        );
+        if (parseInt(activeOrdersRes.rows[0].count) >= maxPendingOrders) {
+          return res.status(429).json({ error: "Sizda to'lanmagan buyurtmalar mavjud. Iltimos oldin ularni to'lang yoki biroz kuting." });
+        }
+    }
+
     if (!recipientUsername || !giftId) {
       return res.status(400).json({ error: "recipientUsername va giftId kerak" });
     }
@@ -5089,7 +5129,7 @@ app.post("/api/gift/order", telegramAuth, async (req, res) => {
       `SELECT id, summ, created_at FROM orders 
        WHERE order_type = 'gift' AND type_amount = $1 
        AND status = 'pending' AND payment_status = 'pending'
-       AND created_at >= NOW() - INTERVAL '5 minutes'`,
+       AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'`,
       [serverStars]
     );
     
@@ -5689,11 +5729,23 @@ async function generateUniqueOrderSum(baseAmount, client) {
   throw new Error("Unique summ topilmadi, keyinroq urinib ko'ring (db retries exhausted)");
 }
 // 📦 UNIFIED ORDER CREATE — Stars, Premium, Gift uchun yagona endpoint
-app.post("/api/v2/order/create", telegramAuth, async (req, res) => {
+app.post("/api/v2/order/create", orderLimiter, telegramAuth, async (req, res) => {
   try {
     console.log("\n=============== 📦 UNIFIED ORDER CREATE ===============");
     console.log("📥 Keldi:", req.body);
-    
+
+    const maxPendingOrders = 2;
+    const tgUserId = req.telegramUser?.id ? String(req.telegramUser.id) : null;
+    if (tgUserId) {
+        const activeOrdersRes = await pool.query(
+          `SELECT COUNT(*) as count FROM orders WHERE owner_user_id = $1 AND status = 'pending' AND payment_status = 'pending'`,
+          [tgUserId]
+        );
+        if (parseInt(activeOrdersRes.rows[0].count) >= maxPendingOrders) {
+          return res.status(429).json({ error: "Sizda to'lanmagan buyurtmalar mavjud. Iltimos oldin ularni to'lang yoki biroz kuting." });
+        }
+    }
+
     let {
       order_type,       // 'stars', 'premium', 'gift'
       recipient_username,
@@ -6464,7 +6516,7 @@ app.get("/api/debug/slots", adminAuth, async (req, res) => {
     // Database pending orders
     const dbPending = await pool.query(`
       SELECT order_type, type_amount, COUNT(*) as count,
-             SUM(CASE WHEN created_at >= NOW() - INTERVAL '5 minutes' THEN 1 ELSE 0 END) as recent_count
+             SUM(CASE WHEN created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes' THEN 1 ELSE 0 END) as recent_count
       FROM orders 
       WHERE status = 'pending' AND payment_status = 'pending'
       GROUP BY order_type, type_amount
@@ -6477,7 +6529,7 @@ app.get("/api/debug/slots", adminAuth, async (req, res) => {
              EXTRACT(EPOCH FROM (NOW() - created_at)) as age_seconds
       FROM orders 
       WHERE order_type = 'stars' AND status = 'pending' AND payment_status = 'pending'
-      AND created_at >= NOW() - INTERVAL '5 minutes'
+      AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'
       ORDER BY type_amount, created_at
     `);
     
