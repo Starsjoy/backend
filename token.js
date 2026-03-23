@@ -216,7 +216,7 @@ bot.action('check_subscription', async (ctx) => {
         );
         console.log(`✅ User ${userId} subscribe_user = true qilindi`);
 
-        // Agar referrer orqali kelgan bo'lsa - +2 bonus berish
+        // Agar referrer orqali kelgan bo'lsa - referralni tasdiqlash
         if (user.referrer_user_id) {
           try {
             const referrerResult = await pool.query(
@@ -227,29 +227,19 @@ bot.action('check_subscription', async (ctx) => {
             if (referrerResult.rows.length > 0) {
               const referrerUsername = referrerResult.rows[0].username;
               const userName = user.username || String(userId);
-              const bonusStars = 2;
 
-              // Referrer balance-ga qo'shish
+              // Referrer ni total_referrals ni oshirish (Bonus +2 berilmaydi)
               await pool.query(
                 `UPDATE users 
-                 SET referral_balance = referral_balance + $1,
-                     total_earnings = total_earnings + $1,
-                     total_referrals = total_referrals + 1
-                 WHERE user_id = $2`,
-                [bonusStars, user.referrer_user_id]
+                 SET total_referrals = total_referrals + 1
+                 WHERE user_id = $1`,
+                [user.referrer_user_id]
               );
 
-              // Referral earnings log
-              await pool.query(
-                `INSERT INTO referral_earnings (referrer_username, referee_username, earned_stars, triggered_by_transaction_id)
-                 VALUES ($1, $2, $3, $4)`,
-                [referrerUsername, userName, bonusStars, null]
-              );
-
-              console.log(`🎁 SUBSCRIBE BONUS: ${referrerUsername} ga ${bonusStars}⭐ bonus qo'shildi (${userName} kanalga obuna bo'ldi)`);
+              console.log(`🎁 REFERRAL TASDIQLANDI: ${referrerUsername} ga yangi referral qo'shildi (${userName} kanalga obuna bo'ldi). Bonus berilmaydi.`);
             }
           } catch (bonusErr) {
-            console.error('❌ Subscribe bonus error:', bonusErr.message);
+            console.error('❌ Subscribe referral update error:', bonusErr.message);
           }
         }
       }
