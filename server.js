@@ -2535,7 +2535,10 @@ app.post("/api/payments/match", internalAuth, async (req, res) => {
            status = CASE WHEN status = 'pending' THEN 'processing' ELSE status END
        WHERE id = (
          SELECT id FROM orders 
-         WHERE summ = $1 AND payment_status = 'pending' 
+         WHERE summ = $1 
+           AND payment_status = 'pending'
+           AND status = 'pending'
+           AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '15 minutes'
          ORDER BY id DESC 
          LIMIT 1
          FOR UPDATE SKIP LOCKED
@@ -3207,7 +3210,11 @@ app.post("/api/premium/match", internalAuth, async (req, res) => {
        SET payment_status='paid', status='processing'
        WHERE id=(
          SELECT id FROM orders 
-         WHERE summ=$1 AND payment_status='pending' AND order_type='premium'
+         WHERE summ=$1 
+           AND payment_status='pending' 
+           AND status='pending'
+           AND order_type='premium'
+           AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '15 minutes'
          ORDER BY id DESC LIMIT 1 
          FOR UPDATE SKIP LOCKED
        ) 
@@ -5402,7 +5409,11 @@ app.post("/api/gift/match", internalAuth, async (req, res) => {
            status = 'processing'
        WHERE id = (
          SELECT id FROM orders
-         WHERE summ = $1 AND payment_status = 'pending' AND order_type = 'gift'
+         WHERE summ = $1 
+           AND payment_status = 'pending' 
+           AND status = 'pending'
+           AND order_type = 'gift'
+           AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '15 minutes'
          ORDER BY id DESC
          LIMIT 1
          FOR UPDATE SKIP LOCKED
@@ -5491,6 +5502,7 @@ async function sendGiftToUser(order) {
       [order.id]
     );
     releaseGiftPriceSlotByOrderId(order.id);
+    removePriceFromCacheByOrderId(order.id); // 🧹 Cache don't stuck with errored pending slot
     throw err;
   }
 }
@@ -5966,7 +5978,10 @@ app.post("/api/v2/payments/match", internalAuth, async (req, res) => {
        SET payment_status = 'completed'
        WHERE id = (
          SELECT id FROM orders 
-         WHERE summ = $1 AND payment_status = 'pending' 
+         WHERE summ = $1 
+           AND payment_status = 'pending' 
+           AND status = 'pending'
+           AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '15 minutes'
          ORDER BY id DESC 
          LIMIT 1
          FOR UPDATE SKIP LOCKED

@@ -307,10 +307,16 @@ app.post('/api/gift/send-userbot', async (req, res) => {
         console.log(`🎁 Gift yuborilmoqda: @${cleanUsername} | gift: ${giftId} | anonim: ${anonymous}`);
 
         // Username orqali InputPeer olish
-        const inputPeer = await client.getInputEntity(cleanUsername);
+        let inputPeer;
+        try {
+            inputPeer = await client.getInputEntity(cleanUsername);
+        } catch (err) {
+            console.error("❌ getInputEntity xatosi:", err.message);
+            return res.status(404).json({ success: false, error: 'User Telegram bazasidan topilmadi. Ular botga profil ochiqligini tekshirishlari yoki maxfiylik sozlamalarini to\'g\'irlashlari kerak.' });
+        }
 
-        if (!inputPeer) {
-            return res.status(404).json({ success: false, error: 'Foydalanuvchi topilmadi' });
+        if (!inputPeer || !inputPeer.userId) {
+            return res.status(404).json({ success: false, error: 'User Telegram bazasidan topilmadi. Ular userbotda kontakt yoki xabar tarixida bo\'lishi kerak.' });
         }
 
         // InputInvoiceStarGift yaratish
