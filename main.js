@@ -1,4 +1,24 @@
 import { fork } from "child_process";
+import pg from "pg";
+import dotenv from "dotenv";
+
+dotenv.config();
+const { Pool } = pg;
+
+async function runCleanup() {
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  try {
+    console.log("🧹 Barcha eski (pending) orderlarni tozalash (expired qilish)...");
+    const updateQuery = await pool.query(
+      "UPDATE orders SET payment_status = 'expired', status = 'expired' WHERE payment_status = 'pending' OR status = 'pending'"
+    );
+    console.log(`✅ Tozalash tugadi! ${updateQuery.rowCount} ta order 'expired' holatiga o'tdi.`);
+  } catch (err) {
+    console.error("❌ Tozalashda xato yuz berdi:", err.message);
+  } finally {
+    await pool.end();
+  }
+}
 
 function runScript(path) {
   const ps = fork(path);
@@ -12,7 +32,12 @@ function runScript(path) {
 }
 
 // =============================
-// 1) Express backend (server.js)
+// 1) Eski orderlarni bekor qilish
+// =============================
+await runCleanup();
+
+// =============================
+// 2) Express backend (server.js)
 // =============================
 console.log("🚀 Backend server starting...");
 runScript("./server.js");
