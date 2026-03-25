@@ -2361,8 +2361,8 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
         }
       }
       
-      const uniqueSum = finalAmount;
-      
+      const uniqueSum = await generateUniqueOrderSum(finalAmount, client);
+
       const orderId = crypto.randomUUID();
       const result = await client.query(
         `INSERT INTO orders (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, applied_promocode, discount_amount, created_at)
@@ -3096,17 +3096,19 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
       console.log("✅ Slot-based narx:", finalAmount);
       console.log("📝 Bazaga yozilmoqda...");
 
+      const uniqueSum = await generateUniqueOrderSum(finalAmount, client);
+
       // 🟦 YANGI orders jadvaliga yozish
       const result = await client.query(
         `INSERT INTO orders (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, applied_promocode, discount_amount, created_at)
          VALUES ($1, $2, $3, $4, 'premium', $5, $6, 'card', 'pending', 'pending', $7, $8, NOW())
          RETURNING *`,
-        [orderId, ownerUserId, clean, recipient, months, finalAmount, promoCodeValid, finalDiscountAmount]
+        [orderId, ownerUserId, clean, recipient, months, uniqueSum, promoCodeValid, finalDiscountAmount]
       );
-      
+
       await client.query('COMMIT');
       order = result.rows[0];
-      
+
       // 🎯 Slotni haqiqiy order ID bilan yangilash
       if (premiumPriceSlots[months] && premiumPriceSlots[months][priceSlotIndex]) {
         premiumPriceSlots[months][priceSlotIndex].orderId = order.id;
@@ -5235,6 +5237,8 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
         }
       }
 
+const uniqueSum = await generateUniqueOrderSum(finalAmount, client);
+
       const orderId = crypto.randomUUID();
       const result = await client.query(
         `INSERT INTO orders
@@ -5247,7 +5251,7 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
           tgUser?.username || 'unknown',
           cleanUsername,
           serverStars,
-          finalAmount,
+          uniqueSum,
           giftId,
           anonymous === true,
           comment && comment.trim() ? comment.trim() : null,
@@ -5257,11 +5261,14 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
       );
       await client.query('COMMIT');
       order = result.rows[0];
-      
+
       // 🎯 Slotni haqiqiy order ID bilan yangilash
       if (giftPriceSlots[serverStars] && giftPriceSlots[serverStars][priceSlotIndex]) {
         giftPriceSlots[serverStars][priceSlotIndex].orderId = order.id;
       }
+
+      // 🔄 Global cache ga qo'shish
+      addPriceToCache(order.summ, order.id, 'gift');
       
       // 🔄 Global cache ga qo'shish
       addPriceToCache(order.summ, order.id, 'gift');

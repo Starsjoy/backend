@@ -216,6 +216,17 @@ bot.action('check_subscription', async (ctx) => {
         );
         console.log(`✅ User ${userId} subscribe_user = true qilindi`);
 
+        // Agar bu user referral request'ga ega bo'lsa - subscribe_referrer ni true qilish
+        try {
+          await pool.query(
+            "UPDATE referral_requests SET subscribe_referrer = true WHERE owner_user_id = $1 AND is_accepted = false AND rejected_at IS NULL",
+            [String(userId)]
+          );
+          console.log(`✅ Referral request updated: ${userId} kanalga obuna bo'ldi`);
+        } catch (err) {
+          console.error("⚠️ Update referral request subscribe status error:", err.message);
+        }
+
         // Agar referrer orqali kelgan bo'lsa - referralni tasdiqlash
         if (user.referrer_user_id) {
           try {
