@@ -5693,48 +5693,43 @@ app.get("/api/admin/bot-stars-balance", adminAuth, async (req, res) => {
 // ==============================================
 // 📦 UNIFIED ORDER SYSTEM — Yangi optimallashtirilgan tizim
 // ==============================================
-// 🔧 Unique summ generatsiya qiluvchi funksiya
+// 🔧 Unique summ generatsiya qiluvchi funksiya (20ta slot -50 so'mdan)
 async function generateUniqueOrderSum(baseAmount, client) {
-  // 🔄 Global cache dan foydalanish (tezkor)
-  let uniqueSum = baseAmount;
-  let attempts = 0;
-  const maxAttempts = 200;
-  const maxDbRetries = 10; // DB tekshiruvi uchun maksimum qayta urinishlar
-  let dbRetries = 0;
+  const maxSlots = 21; // 0 dan 20 gacha jami 21 xil narx (baseAmount dan to baseAmount - 1000 gacha)
+  const slotCandidates = [];
   
-  while (dbRetries < maxDbRetries) {
-    attempts = 0;
-    
-    // Cache dan bo'sh narx qidirish
-    while (isPriceUsed(uniqueSum) && attempts < maxAttempts) {
-      const offset = Math.floor(Math.random() * 101) - 50;
-      uniqueSum = baseAmount + offset;
-      attempts++;
+  for (let i = 0; i < maxSlots; i++) {
+    slotCandidates.push(baseAmount - (i * 50));
+  }
+
+  let selectedSum = null;
+
+  for (const candidate of slotCandidates) {
+    // 1-qadam: Global cachedan tekshirish
+    if (isPriceUsed(candidate)) {
+      continue;
     }
     
-    if (attempts >= maxAttempts) {
-      throw new Error("Unique summ topilmadi, keyinroq urinib ko'ring");
-    }
-    
-    // Transaction ichida yakuniy tekshiruv (atomik xavfsizlik)
+    // 2-qadam: Baza orqali (pending orderlar ichida) qat'iy tekshirish
     const finalCheck = await client.query(
       "SELECT id FROM orders WHERE summ = $1 AND (status = 'pending' OR payment_status = 'pending') LIMIT 1",
-      [uniqueSum]
+      [candidate]
     );
-    
+
     if (finalCheck.rows.length === 0) {
-      // Unique narx topildi
-      return uniqueSum;
+      selectedSum = candidate;
+      break;
+    } else {
+      // Agar bazada topilib, lekin cache'da yo'q bo'lsa, xavfsizlik uchun cache'ni yangilaymiz
+      addPriceToCache(candidate, 'db_ghost_' + Date.now(), 'temp');
     }
-    
-    // Cache outdated - cache ga qo'shib, qayta urinish (REKURSIYASIZ)
-    addPriceToCache(uniqueSum, 'temp_' + Date.now(), 'temp');
-    baseAmount = baseAmount + Math.floor(Math.random() * 100);
-    uniqueSum = baseAmount;
-    dbRetries++;
   }
-  
-  throw new Error("Unique summ topilmadi, keyinroq urinib ko'ring (db retries exhausted)");
+
+  if (selectedSum === null) {
+    throw new Error("Tizimda order ko'p 5 daqiqada qayta urinib ko'ring");
+  }
+
+  return selectedSum;
 }
 // 📦 UNIFIED ORDER CREATE — Stars, Premium, Gift uchun yagona endpoint
 app.post("/api/v2/order/create", orderLimiter, telegramAuth, async (req, res) => {
