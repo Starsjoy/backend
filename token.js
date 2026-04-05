@@ -120,7 +120,7 @@ async function safeReply(ctx, text, keyboard) {
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
   const fullName = ctx.from.first_name;
-  const username = ctx.from.username || null;
+  const username = ctx.from.username || `user_${userId}`; // Username bo'lmasa user_id ishlatiladi
   const language = ctx.from.language_code || 'uz';
 
   try {

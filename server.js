@@ -4041,7 +4041,7 @@ app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) =
     const tgName = tgUser?.first_name 
       ? `${tgUser.first_name}${tgUser.last_name ? ' ' + tgUser.last_name : ''}`
       : null;
-    const tgUsername = tgUser?.username || (username?.startsWith("@") ? username.slice(1) : username);
+    const tgUsername = tgUser?.username || (username?.startsWith("@") ? username.slice(1) : username) || `user_${tgUserId}`;
     if (!tgUserId) {
       return res.status(400).json({ error: "Telegram user_id kerak" });
     }
