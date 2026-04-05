@@ -438,7 +438,9 @@ function isPriceUsed(price) {
   return globalUsedPrices.has(price);
 }
 
-// Cache ni tozalash (expired orderlar) - har 1 daqiqada
+// ======================
+// ⏰ EXPIRED ORDERS PROCESSING - Har 1 daqiqada
+// ======================
 setInterval(async () => {
   try {
     // 5 daqiqadan eski pending orderlarni expired qilish
@@ -506,7 +508,16 @@ Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
         }
       }
     }
-    
+  } catch (err) {
+    console.error('❌ Expired orders processing xatosi:', err.message);
+  }
+}, 60 * 1000); // Har 1 daqiqa
+
+// ======================
+// 🧹 DEEP CACHE SYNC - Har 1 soatda (slot sinxronizatsiya)
+// ======================
+setInterval(async () => {
+  try {
     // Bazadan haqiqiy pending orderlarni olish (faqat oxirgi 5 daqiqadagi)
     const result = await pool.query(
       "SELECT summ FROM orders WHERE status = 'pending' AND payment_status = 'pending' AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'"
