@@ -308,11 +308,57 @@ async function loadPendingOrdersToCache() {
       WHERE status = 'pending' 
         AND payment_status = 'pending'
         AND created_at < (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'
-      RETURNING id
+      RETURNING id, owner_user_id, order_type
     `);
     
     if (expireResult.rows.length > 0) {
       console.log(`🧹 ${expireResult.rows.length} ta eski pending order expired qilindi`);
+      
+      // Expired bo'lgan orderlar uchun cache tozalash va xabar yuborish
+      for (const row of expireResult.rows) {
+        // Barcha slot turlarini bo'shatish
+        releasePriceSlotByOrderId(row.id);
+        releaseDiscountPriceSlotByOrderId(row.id);
+        releasePremiumPriceSlotByOrderId(row.id);
+        releaseGiftPriceSlotByOrderId(row.id);
+        
+        // Xabar yuborish (faqat 1 marta)
+        if (['stars', 'gift', 'premium'].includes(row.order_type) && row.owner_user_id && bot) {
+          try {
+            let expiredNotificationText = '';
+            if (row.order_type === 'stars') {
+              expiredNotificationText = `⚠️ Siz stars sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
+
+Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
+
+👉 @StarsjoySupport`;
+            } else if (row.order_type === 'gift') {
+              expiredNotificationText = `⚠️ Siz gift yuborishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
+
+Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
+
+👉 @StarsjoySupport`;
+            } else if (row.order_type === 'premium') {
+              expiredNotificationText = `⚠️ Siz premium sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
+
+Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
+
+👉 @StarsjoySupport`;
+            }
+            
+            await bot.telegram.sendMessage(row.owner_user_id, expiredNotificationText);
+            
+            // expired_notified ni true qilish
+            await pool.query(
+              `UPDATE orders SET expired_notified = true WHERE id = $1`,
+              [row.id]
+            );
+            console.log(`📩 Expired order xabari yuborildi (startup): user=${row.owner_user_id}, order=#${row.id}, type=${row.order_type}`);
+          } catch (notifyErr) {
+            console.error(`❌ Expired order xabari yuborishda xato (user=${row.owner_user_id}):`, notifyErr.message);
+          }
+        }
+      }
     }
     
     // Faqat oxirgi 5 daqiqadagi pending orderlarni yuklash
@@ -402,7 +448,7 @@ setInterval(async () => {
       WHERE status = 'pending' 
         AND payment_status = 'pending'
         AND created_at < (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'
-      RETURNING id, summ, applied_promocode
+      RETURNING id, summ, applied_promocode, owner_user_id, order_type
     `);
     
     if (expireResult.rows.length > 0) {
@@ -412,12 +458,51 @@ setInterval(async () => {
         globalUsedPrices.delete(row.summ);
         releasePriceSlotByOrderId(row.id);
         releaseDiscountPriceSlotByOrderId(row.id);
+        releasePremiumPriceSlotByOrderId(row.id);
+        releaseGiftPriceSlotByOrderId(row.id);
 
         if (row.applied_promocode) {
           await pool.query(
             `UPDATE promocodes SET used_count = GREATEST(used_count - 1, 0) WHERE code = $1`,
             [row.applied_promocode]
           );
+        }
+
+        // Order expired bo'lsa, foydalanuvchiga xabar yuborish (faqat 1 marta)
+        if (['stars', 'gift', 'premium'].includes(row.order_type) && row.owner_user_id && bot) {
+          try {
+            let expiredNotificationText = '';
+            if (row.order_type === 'stars') {
+              expiredNotificationText = `⚠️ Siz stars sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
+
+Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
+
+👉 @StarsjoySupport`;
+            } else if (row.order_type === 'gift') {
+              expiredNotificationText = `⚠️ Siz gift yuborishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
+
+Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
+
+👉 @StarsjoySupport`;
+            } else if (row.order_type === 'premium') {
+              expiredNotificationText = `⚠️ Siz premium sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
+
+Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
+
+👉 @StarsjoySupport`;
+            }
+            
+            await bot.telegram.sendMessage(row.owner_user_id, expiredNotificationText);
+            
+            // expired_notified ni true qilish
+            await pool.query(
+              `UPDATE orders SET expired_notified = true WHERE id = $1`,
+              [row.id]
+            );
+            console.log(`📩 Expired order xabari yuborildi: user=${row.owner_user_id}, order=#${row.id}, type=${row.order_type}`);
+          } catch (notifyErr) {
+            console.error(`❌ Expired order xabari yuborishda xato (user=${row.owner_user_id}):`, notifyErr.message);
+          }
         }
       }
     }
@@ -435,10 +520,85 @@ setInterval(async () => {
         globalUsedPrices.delete(price);
       }
     }
+
+    // ===== SLOT CACHE SINXRONIZATSIYASI =====
+    // Bazadan barcha pending orderlarni olish (slotlarni sinxronlash uchun)
+    const pendingOrders = await pool.query(
+      "SELECT id, order_type, type_amount FROM orders WHERE status = 'pending' AND payment_status = 'pending' AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'"
+    );
+    
+    const pendingOrderIds = new Set(pendingOrders.rows.map(r => r.id));
+    
+    // 1. priceSlots (Stars) - bazada yo'q orderlarni tozalash
+    for (const starsAmount in priceSlots) {
+      const slots = priceSlots[starsAmount];
+      for (const slotIndex in slots) {
+        if (!pendingOrderIds.has(slots[slotIndex].orderId)) {
+          console.log(`🧹 Stars ${starsAmount} - Slot ${slotIndex} sinxronlandi (bazada yo'q): orderId=${slots[slotIndex].orderId}`);
+          delete slots[slotIndex];
+        }
+      }
+      // Bo'sh poollarni o'chirish
+      if (Object.keys(slots).length === 0) {
+        delete priceSlots[starsAmount];
+      }
+    }
+    
+    // 2. discountPriceSlots - bazada yo'q orderlarni tozalash
+    for (const packageId in discountPriceSlots) {
+      const slots = discountPriceSlots[packageId];
+      for (const slotIndex in slots) {
+        if (!pendingOrderIds.has(slots[slotIndex].orderId)) {
+          console.log(`🧹 Discount ${packageId} - Slot ${slotIndex} sinxronlandi (bazada yo'q): orderId=${slots[slotIndex].orderId}`);
+          delete slots[slotIndex];
+        }
+      }
+      if (Object.keys(slots).length === 0) {
+        delete discountPriceSlots[packageId];
+      }
+    }
+    
+    // 3. premiumPriceSlots - bazada yo'q orderlarni tozalash
+    for (const months in premiumPriceSlots) {
+      const slots = premiumPriceSlots[months];
+      for (const slotIndex in slots) {
+        if (!pendingOrderIds.has(slots[slotIndex].orderId)) {
+          console.log(`🧹 Premium ${months}m - Slot ${slotIndex} sinxronlandi (bazada yo'q): orderId=${slots[slotIndex].orderId}`);
+          delete slots[slotIndex];
+        }
+      }
+      if (Object.keys(slots).length === 0) {
+        delete premiumPriceSlots[months];
+      }
+    }
+    
+    // 4. giftPriceSlots - bazada yo'q orderlarni tozalash
+    for (const giftStars in giftPriceSlots) {
+      const slots = giftPriceSlots[giftStars];
+      for (const slotIndex in slots) {
+        if (!pendingOrderIds.has(slots[slotIndex].orderId)) {
+          console.log(`🧹 Gift ${giftStars}⭐ - Slot ${slotIndex} sinxronlandi (bazada yo'q): orderId=${slots[slotIndex].orderId}`);
+          delete slots[slotIndex];
+        }
+      }
+      if (Object.keys(slots).length === 0) {
+        delete giftPriceSlots[giftStars];
+      }
+    }
+
+    // Cache holati haqida log
+    const totalStarsSlots = Object.values(priceSlots).reduce((sum, slots) => sum + Object.keys(slots).length, 0);
+    const totalDiscountSlots = Object.values(discountPriceSlots).reduce((sum, slots) => sum + Object.keys(slots).length, 0);
+    const totalPremiumSlots = Object.values(premiumPriceSlots).reduce((sum, slots) => sum + Object.keys(slots).length, 0);
+    const totalGiftSlots = Object.values(giftPriceSlots).reduce((sum, slots) => sum + Object.keys(slots).length, 0);
+    
+    if (totalStarsSlots > 0 || totalDiscountSlots > 0 || totalPremiumSlots > 0 || totalGiftSlots > 0) {
+      console.log(`📊 Cache holati: Stars=${totalStarsSlots}, Discount=${totalDiscountSlots}, Premium=${totalPremiumSlots}, Gift=${totalGiftSlots} slot(lar)`);
+    }
   } catch (err) {
     console.error('❌ Cache tozalashda xato:', err.message);
   }
-}, 60 * 1000); // Har 1 daqiqa
+}, 60 * 60 * 1000); // Har 1 soat
 
 // ======================
 // 🎯 PRICE SLOT SYSTEM - Dinamik narx tizimi (Stars * NARX so'm)
@@ -1455,6 +1615,7 @@ pool.on('connect', () => {
       gift_comment TEXT,
       applied_promocode TEXT,
       discount_amount INTEGER DEFAULT 0,
+      expired_notified BOOLEAN DEFAULT false,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'Asia/Tashkent')
     );
   `);
@@ -1464,6 +1625,9 @@ pool.on('connect', () => {
   } catch (e) { /* ignore if exists */ }
   try {
     await pool.query(`ALTER TABLE orders ADD COLUMN discount_amount INTEGER DEFAULT 0`);
+  } catch (e) { /* ignore if exists */ }
+  try {
+    await pool.query(`ALTER TABLE orders ADD COLUMN expired_notified BOOLEAN DEFAULT false`);
   } catch (e) { /* ignore if exists */ }
 
   console.log("✅ Table 'orders' ready (unified)");
