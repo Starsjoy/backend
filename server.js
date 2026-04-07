@@ -2609,7 +2609,7 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
     setTimeout(async () => {
       try {
         const check = await pool.query(
-          "SELECT status, order_type, type_amount FROM orders WHERE id = $1",
+          "SELECT status, order_type, type_amount, owner_user_id, expired_notified FROM orders WHERE id = $1",
           [order.id]
         );
         if (check.rows[0]?.status === "pending") {
@@ -2628,11 +2628,32 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
           removePriceFromCacheByOrderId(order.id);
           
           console.log(`⏰ Order #${order.id} expired`);
+          
+          // 📩 Foydalanuvchiga expired xabari yuborish
+          const ownerUserId = check.rows[0]?.owner_user_id;
+          const alreadyNotified = check.rows[0]?.expired_notified;
+          if (ownerUserId && bot && !alreadyNotified) {
+            try {
+              const expiredNotificationText = `⚠️ Siz stars sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
+
+Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
+
+👉 @StarsjoySupport`;
+              await bot.telegram.sendMessage(ownerUserId, expiredNotificationText);
+              await pool.query(
+                `UPDATE orders SET expired_notified = true WHERE id = $1`,
+                [order.id]
+              );
+              console.log(`📩 Expired stars xabari yuborildi (setTimeout): user=${ownerUserId}, order=#${order.id}`);
+            } catch (notifyErr) {
+              console.error(`❌ Expired stars xabari yuborishda xato (user=${ownerUserId}):`, notifyErr.message);
+            }
+          }
         }
       } catch (e) {
         console.error("❌ Expiry tekshirishda xato:", e);
       }
-    }, 20 * 60 * 1000);
+    }, 5 * 60 * 1000);
     // Backward compatible response
     res.json({
       id: order.id,
@@ -3329,7 +3350,7 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
     setTimeout(async () => {
       try {
         const check = await pool.query(
-          "SELECT status FROM orders WHERE id = $1",
+          "SELECT status, owner_user_id, expired_notified FROM orders WHERE id = $1",
           [order.id]
         );
         if (check.rows[0]?.status === "pending") {
@@ -3345,6 +3366,27 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
           removePriceFromCacheByOrderId(order.id);
           
           console.log(`⏰ Premium Order #${order.id} expired`);
+          
+          // 📩 Foydalanuvchiga expired xabari yuborish
+          const ownerUserId = check.rows[0]?.owner_user_id;
+          const alreadyNotified = check.rows[0]?.expired_notified;
+          if (ownerUserId && bot && !alreadyNotified) {
+            try {
+              const expiredNotificationText = `⚠️ Siz premium sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
+
+Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
+
+👉 @StarsjoySupport`;
+              await bot.telegram.sendMessage(ownerUserId, expiredNotificationText);
+              await pool.query(
+                `UPDATE orders SET expired_notified = true WHERE id = $1`,
+                [order.id]
+              );
+              console.log(`📩 Expired premium xabari yuborildi (setTimeout): user=${ownerUserId}, order=#${order.id}`);
+            } catch (notifyErr) {
+              console.error(`❌ Expired premium xabari yuborishda xato (user=${ownerUserId}):`, notifyErr.message);
+            }
+          }
         }
       } catch (e) {
         console.error("❌ Premium Expiry tekshirishda xato:", e);
@@ -5487,7 +5529,7 @@ const uniqueSum = await generateUniqueOrderSum(finalAmount, client);
     setTimeout(async () => {
       try {
         const check = await pool.query(
-          "SELECT status FROM orders WHERE id = $1",
+          "SELECT status, owner_user_id, expired_notified FROM orders WHERE id = $1",
           [order.id]
         );
         if (check.rows[0]?.status === "pending") {
@@ -5503,6 +5545,27 @@ const uniqueSum = await generateUniqueOrderSum(finalAmount, client);
           removePriceFromCacheByOrderId(order.id);
           
           console.log(`⏰ Gift Order #${order.id} expired`);
+          
+          // 📩 Foydalanuvchiga expired xabari yuborish
+          const ownerUserId = check.rows[0]?.owner_user_id;
+          const alreadyNotified = check.rows[0]?.expired_notified;
+          if (ownerUserId && bot && !alreadyNotified) {
+            try {
+              const expiredNotificationText = `⚠️ Siz gift yuborishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
+
+Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
+
+👉 @StarsjoySupport`;
+              await bot.telegram.sendMessage(ownerUserId, expiredNotificationText);
+              await pool.query(
+                `UPDATE orders SET expired_notified = true WHERE id = $1`,
+                [order.id]
+              );
+              console.log(`📩 Expired gift xabari yuborildi (setTimeout): user=${ownerUserId}, order=#${order.id}`);
+            } catch (notifyErr) {
+              console.error(`❌ Expired gift xabari yuborishda xato (user=${ownerUserId}):`, notifyErr.message);
+            }
+          }
         }
       } catch (e) {
         console.error("❌ Gift expiry xatosi:", e);
