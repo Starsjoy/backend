@@ -3679,6 +3679,12 @@ app.patch("/api/admin/premium/update/:id", adminAuth, async (req, res) => {
     );
     if (!result.rows.length)
       return res.status(404).json({ error: "Order topilmadi" });
+
+    if (['completed', 'delivered', 'failed', 'error', 'expired', 'cancelled', 'processing'].includes(status)) {
+      releasePremiumPriceSlotByOrderId(result.rows[0].id);
+      removePriceFromCacheByOrderId(result.rows[0].id);
+    }
+    
     res.json({ success: true, updated: result.rows[0] });
   } catch (err) {
     console.error("❌ /api/admin/premium/update ERROR:", err);
@@ -5808,6 +5814,12 @@ app.patch("/api/admin/gift/update/:id", adminAuth, async (req, res) => {
     );
     if (!result.rows.length)
       return res.status(404).json({ error: "Gift order topilmadi" });
+
+    if (['completed', 'delivered', 'failed', 'error', 'expired', 'cancelled', 'processing'].includes(status)) {
+      releaseGiftPriceSlotByOrderId(result.rows[0].id);
+      removePriceFromCacheByOrderId(result.rows[0].id);
+    }
+    
     res.json({ success: true, updated: result.rows[0] });
   } catch (err) {
     console.error("❌ /api/admin/gift/update ERROR:", err);
@@ -6137,7 +6149,7 @@ app.post("/api/v2/order/create", orderLimiter, telegramAuth, async (req, res) =>
     setTimeout(async () => {
       try {
         const check = await pool.query(
-          "SELECT status FROM orders WHERE id = $1",
+          "SELECT status, order_type FROM orders WHERE id = $1",
           [order.id]
         );
         
@@ -6146,6 +6158,16 @@ app.post("/api/v2/order/create", orderLimiter, telegramAuth, async (req, res) =>
             "UPDATE orders SET status = 'expired', payment_status = 'expired' WHERE id = $1",
             [order.id]
           );
+          
+          const orderType = check.rows[0].order_type;
+          if (orderType === 'stars') {
+            releasePriceSlotByOrderId(order.id);
+            releaseDiscountPriceSlotByOrderId(order.id);
+          } else if (orderType === 'premium') {
+            releasePremiumPriceSlotByOrderId(order.id);
+          } else if (orderType === 'gift') {
+            releaseGiftPriceSlotByOrderId(order.id);
+          }
           
           // 🔄 Cache dan o'chirish
           removePriceFromCacheByOrderId(order.id);
@@ -6247,6 +6269,13 @@ app.post("/api/v2/payments/match", internalAuth, async (req, res) => {
         "UPDATE orders SET status = 'error' WHERE id = $1",
         [order.id]
       );
+      // 🔥 Xato bo'lsa ham slot va keshlarni bo'shatish
+      releasePriceSlotByOrderId(order.id);
+      releaseDiscountPriceSlotByOrderId(order.id);
+      releasePremiumPriceSlotByOrderId(order.id);
+      releaseGiftPriceSlotByOrderId(order.id);
+      removePriceFromCacheByOrderId(order.id);
+      
       return res.json({ 
         success: false, 
         order_id: order.id, 
@@ -6303,6 +6332,10 @@ async function deliverStarsOrder(order) {
       "UPDATE orders SET status = 'failed' WHERE id = $1",
       [order.id]
     );
+    // 🎯 Slotni bo'shatish - failed
+    releasePriceSlotByOrderId(order.id);
+    releaseDiscountPriceSlotByOrderId(order.id);
+    removePriceFromCacheByOrderId(order.id);
     throw new Error("Stars yuborishda xato: " + JSON.stringify(data));
   }
   
@@ -6311,6 +6344,11 @@ async function deliverStarsOrder(order) {
     "UPDATE orders SET status = 'delivered', transaction_id = $1 WHERE id = $2",
     [data.transaction_id, order.id]
   );
+  
+  // 🎯 Slotni bo'shatish - completed
+  releasePriceSlotByOrderId(order.id);
+  releaseDiscountPriceSlotByOrderId(order.id);
+  removePriceFromCacheByOrderId(order.id);
   
   console.log(`✅ Stars yuborildi: Order #${order.id} -> TxID: ${data.transaction_id}`);
   
@@ -6364,6 +6402,7 @@ async function deliverPremiumOrder(order) {
     );
     // 🎯 Slotni bo'shatish - failed
     releasePremiumPriceSlotByOrderId(order.id);
+    removePriceFromCacheByOrderId(order.id);
     throw new Error("Premium yuborishda xato: " + JSON.stringify(data));
   }
   
@@ -6375,6 +6414,7 @@ async function deliverPremiumOrder(order) {
   
   // 🎯 Slotni bo'shatish - completed
   releasePremiumPriceSlotByOrderId(order.id);
+  removePriceFromCacheByOrderId(order.id);
   
   console.log(`✅ Premium yuborildi: Order #${order.id} -> TxID: ${data.transaction_id}`);
   
@@ -6429,6 +6469,7 @@ async function deliverGiftOrder(order) {
     );
     // 🎯 Slotni bo'shatish - failed
     releaseGiftPriceSlotByOrderId(order.id);
+    removePriceFromCacheByOrderId(order.id);
     throw new Error("Gift yuborishda xato: " + JSON.stringify(data));
   }
   
@@ -6440,6 +6481,7 @@ async function deliverGiftOrder(order) {
   
   // 🎯 Slotni bo'shatish - completed
   releaseGiftPriceSlotByOrderId(order.id);
+  removePriceFromCacheByOrderId(order.id);
   
   console.log(`✅ Gift yuborildi: Order #${order.id} -> TxID: ${data.transaction_id}`);
   
@@ -6651,6 +6693,16 @@ app.patch("/api/v2/admin/orders/:id", adminAuth, async (req, res) => {
     
     if (!result.rows.length) {
       return res.status(404).json({ error: "Order topilmadi" });
+    }
+    
+    // Agar status yakuniy holatlardan biriga o'zgartirilgan bo'lsa, keshlarni tozalash (slot qotib qolmasligi uchun)
+    if (status && ['completed', 'delivered', 'failed', 'error', 'expired', 'cancelled', 'processing'].includes(status)) {
+      const orderId = result.rows[0].id;
+      releasePriceSlotByOrderId(orderId);
+      releaseDiscountPriceSlotByOrderId(orderId);
+      releasePremiumPriceSlotByOrderId(orderId);
+      releaseGiftPriceSlotByOrderId(orderId);
+      removePriceFromCacheByOrderId(orderId);
     }
     
     res.json({ success: true, order: result.rows[0] });
