@@ -1630,16 +1630,6 @@ pool.on('connect', () => {
       created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'Asia/Tashkent')
     );
   `);
-  // If table exists but columns are missing, add them safely
-  try {
-    await pool.query(`ALTER TABLE orders ADD COLUMN applied_promocode TEXT`);
-  } catch (e) { /* ignore if exists */ }
-  try {
-    await pool.query(`ALTER TABLE orders ADD COLUMN discount_amount INTEGER DEFAULT 0`);
-  } catch (e) { /* ignore if exists */ }
-  try {
-    await pool.query(`ALTER TABLE orders ADD COLUMN expired_notified BOOLEAN DEFAULT false`);
-  } catch (e) { /* ignore if exists */ }
 
   console.log("✅ Table 'orders' ready (unified)");
 })();
@@ -2750,7 +2740,7 @@ app.post("/api/payments/match", internalAuth, async (req, res) => {
     if (order.order_type === 'stars') {
       processReferralBonus(order.recipient_username, order.type_amount, order.id)
         .catch(err => console.error("❌ Referral bonus error:", err.message));
-      sendStarsToUser(order.id, order.recipient, order.type_amount)
+      sendStarsToUser(order)
         .then(tx => {
           console.log(`🌟 ${order.recipient_username} ga ${order.type_amount}⭐ yuborildi! TxID: ${tx}`);
         })
@@ -2800,7 +2790,7 @@ app.post("/api/admin/stars/send/:id", adminAuth, async (req, res) => {
     if (!order.recipient)
       return res.status(400).json({ error: "Recipient ID topilmadi" });
     // Yulduz yuborish funksiyasi
-    const result = await sendStarsToUser(order.id, order.recipient, order.type_amount);
+    const result = await sendStarsToUser(order);
     return res.json({
       success: true,
       message: "Stars yuborildi",
@@ -2817,7 +2807,8 @@ app.post("/api/admin/stars/send/:id", adminAuth, async (req, res) => {
 // ======================
 // 🔹 Yulduzlarni foydalanuvchiga yuborish - RobynHood API orqali --------------------------------REAL?TEST
 // ======================
-async function sendStarsToUser(orderId, recipientId, stars) {
+async function sendStarsToUser(order) {
+  const { id: orderId, recipient: recipientId, type_amount: stars } = order;
   try {
     console.log("🔹 sendStarsToUser:", { orderId, recipientId, stars });
     const idempotencyKey = crypto.randomUUID();
@@ -2853,6 +2844,10 @@ async function sendStarsToUser(orderId, recipientId, stars) {
       // 🎯 Slotni bo'shatish (stars va discount)
       releasePriceSlotByOrderId(orderId);
       releaseDiscountPriceSlotByOrderId(orderId);
+      
+      // 📢 Xato kanalga xabar
+      sendUnifiedChannelNotification(order, 'stars', true).catch(err => console.error("Notif err:", err.message));
+      
       throw new Error("Purchase error: " + JSON.stringify(data));
     }
     const txId = data.transaction_id;
@@ -2873,7 +2868,7 @@ async function sendStarsToUser(orderId, recipientId, stars) {
     
     console.log(`✅ Stars yuborildi: ${orderId} -> ${txId}`);
     // 📢 Kanalga xabar
-    sendChannelNotification(orderId, 'stars').catch(err => console.error("Notification error:", err));
+    sendUnifiedChannelNotification(order, 'stars').catch(err => console.error("Notification error:", err));
     return txId;
   } catch (err) {
     console.error("❌ sendStarsToUser error:", err);
@@ -2881,6 +2876,11 @@ async function sendStarsToUser(orderId, recipientId, stars) {
     // 🎯 Slotni bo'shatish - order error (stars va discount)
     releasePriceSlotByOrderId(orderId);
     releaseDiscountPriceSlotByOrderId(orderId);
+    removePriceFromCacheByOrderId(orderId);
+    
+    // 📢 Xato kanalga xabar
+    sendUnifiedChannelNotification(order, 'stars', true).catch(notifErr => console.error("Notif error:", notifErr));
+
     throw err;
   }
 }
@@ -5719,7 +5719,13 @@ async function sendGiftToUser(order) {
         [order.id]
       );
       releaseGiftPriceSlotByOrderId(order.id);
-      throw new Error(giftData.error || "Gift yuborishda xato");
+      
+      // 📢 Xato kanalga xabar
+      sendUnifiedChannelNotification(order, 'gift', true).catch(err => console.error("Notif err:", err.message));
+      
+      const err = new Error(giftData.error || "Gift yuborishda xato");
+      err.notified = true;
+      throw err;
     }
     // Muvaffaqiyatli — statusni yangilash
     await pool.query(
@@ -5743,6 +5749,10 @@ async function sendGiftToUser(order) {
     );
     releaseGiftPriceSlotByOrderId(order.id);
     removePriceFromCacheByOrderId(order.id); // 🧹 Cache don't stuck with errored pending slot
+    
+    // 📢 Xato kanalga xabar
+    sendUnifiedChannelNotification(order, 'gift', true).catch(err => console.error("Notif err:", err.message));
+    
     throw err;
   }
 }
@@ -6276,6 +6286,11 @@ app.post("/api/v2/payments/match", internalAuth, async (req, res) => {
       releaseGiftPriceSlotByOrderId(order.id);
       removePriceFromCacheByOrderId(order.id);
       
+      // 📢 Umumiy xato kanalga xabarnoma (agar quyi qatlam xabar yubormagan bo'lsa)
+      if (!deliveryErr.notified) {
+        sendUnifiedChannelNotification(order, order.order_type, true).catch(err => console.error("Notif err:", err.message));
+      }
+      
       return res.json({ 
         success: false, 
         order_id: order.id, 
@@ -6336,7 +6351,13 @@ async function deliverStarsOrder(order) {
     releasePriceSlotByOrderId(order.id);
     releaseDiscountPriceSlotByOrderId(order.id);
     removePriceFromCacheByOrderId(order.id);
-    throw new Error("Stars yuborishda xato: " + JSON.stringify(data));
+    
+    // 📢 Xato kanalga xabar
+    sendUnifiedChannelNotification(order, 'stars', true).catch(err => console.error("Notif err:", err.message));
+    
+    const err = new Error("Stars yuborishda xato: " + JSON.stringify(data));
+    err.notified = true;
+    throw err;
   }
   
   // Muvaffaqiyatli — statusni yangilash
@@ -6403,7 +6424,13 @@ async function deliverPremiumOrder(order) {
     // 🎯 Slotni bo'shatish - failed
     releasePremiumPriceSlotByOrderId(order.id);
     removePriceFromCacheByOrderId(order.id);
-    throw new Error("Premium yuborishda xato: " + JSON.stringify(data));
+    
+    // 📢 Xato kanalga xabar
+    sendUnifiedChannelNotification(order, 'premium', true).catch(err => console.error("Notif err:", err.message));
+    
+    const err = new Error("Premium yuborishda xato: " + JSON.stringify(data));
+    err.notified = true;
+    throw err;
   }
   
   // Muvaffaqiyatli
@@ -6470,7 +6497,13 @@ async function deliverGiftOrder(order) {
     // 🎯 Slotni bo'shatish - failed
     releaseGiftPriceSlotByOrderId(order.id);
     removePriceFromCacheByOrderId(order.id);
-    throw new Error("Gift yuborishda xato: " + JSON.stringify(data));
+    
+    // 📢 Xato kanalga xabar
+    sendUnifiedChannelNotification(order, 'gift', true).catch(err => console.error("Notif err:", err.message));
+    
+    const err = new Error("Gift yuborishda xato: " + JSON.stringify(data));
+    err.notified = true;
+    throw err;
   }
   
   // Muvaffaqiyatli
@@ -6491,26 +6524,26 @@ async function deliverGiftOrder(order) {
   return { status: "delivered", transaction_id: data.transaction_id };
 }
 // 📢 Unified kanal xabari
-async function sendUnifiedChannelNotification(order, type) {
+async function sendUnifiedChannelNotification(order, type, isFailed = false) {
   if (!bot) return;
   
-  let emoji = '🌟';
-  let typeName = 'Stars';
+  let emoji = isFailed ? '⚠️' : (type === 'premium' ? '👑' : type === 'gift' ? '🎁' : '🌟');
+  let typeName = type === 'premium' ? 'Premium' : type === 'gift' ? 'Gift' : 'Stars';
   
-  if (type === 'premium') {
-    emoji = '👑';
-    typeName = 'Premium';
-  } else if (type === 'gift') {
-    emoji = '🎁';
-    typeName = 'Gift';
-  }
+  let title = isFailed 
+    ? `<b>${typeName} xaridi muvaffaqiyatsiz bo'ldi!</b>` 
+    : `<b>Yangi ${typeName} sotildi!</b>`;
+
+  const statusText = isFailed 
+    ? `❌ Status: To'langan, ammo yetkazilmadi (failed)` 
+    : `✅ Status: Yetkazildi`;
   
-  const message = `${emoji} <b>Yangi ${typeName} sotildi!</b>\n\n` +
+  const message = `${emoji} ${title}\n\n` +
     `📦 Order: #${order.id}\n` +
     `👤 Oluvchi: ${order.recipient_username || order.recipient}\n` +
     `💫 Miqdor: ${order.type_amount} ${type === 'premium' ? 'oy' : 'stars'}\n` +
     `💰 Summa: ${order.summ.toLocaleString()} so'm\n` +
-    `✅ Status: Yetkazildi`;
+    statusText;
   
   try {
     await bot.telegram.sendMessage(ORDERS_CHANNEL, message, { parse_mode: 'HTML' });
