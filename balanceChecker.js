@@ -162,8 +162,8 @@ export async function initBalanceClient() {
 
     // Premium avto javoblar uchun xotira
     const autoRepliedUsers = new Set();
-    const PREMIUM_1_MONTH_MSG = "(1 oylik Telegram Premium profilingizga kirib, to‘g‘ridan-to‘g‘ri ulab beriladi.\n\nNarxi: 57 000 so‘m\n\nTo‘lovni qilganingizdan keyin chekni yuboring. So‘ng siz bilan qulay vaqtni kelishib, xizmatni ulab beramiz.\n\nTo‘lov uchun karta:\n5614 6887 0424 9142\nSh. F\n\nXizmat to‘lovdan so‘ng amalga oshiriladi.)";
-    const PREMIUM_1_YEAR_MSG = "(1 yillik Telegram Premium profilingizga kirib, to‘g‘ridan-to‘g‘ri ulab beriladi.\n\nNarxi: 320 000 so‘m\n\nTo‘lovni qilganingizdan keyin chekni yuboring. So‘ng siz bilan qulay vaqtni kelishib, xizmatni ulab beramiz.\n\nTo‘lov uchun karta:\n5614 6887 0424 9142\nSh. F\n\nXizmat to‘lovdan so‘ng amalga oshiriladi.)";
+    const PREMIUM_1_MONTH_MSG = "1 oylik Telegram Premium profilingizga kirib, to‘g‘ridan-to‘g‘ri ulab beriladi.\n\nNarxi: 57 000 so‘m\n\nTo‘lovni qilganingizdan keyin chekni yuboring. So‘ng siz bilan qulay vaqtni kelishib, xizmatni ulab beramiz.\n\nTo‘lov uchun karta:\n5614 6887 0424 9142\nSh. F\n\nXizmat to‘lovdan so‘ng amalga oshiriladi.";
+    const PREMIUM_1_YEAR_MSG = "1 yillik Telegram Premium profilingizga kirib, to‘g‘ridan-to‘g‘ri ulab beriladi.\n\nNarxi: 320 000 so‘m\n\nTo‘lovni qilganingizdan keyin chekni yuboring. So‘ng siz bilan qulay vaqtni kelishib, xizmatni ulab beramiz.\n\nTo‘lov uchun karta:\n5614 6887 0424 9142\nSh. F\n\nXizmat to‘lovdan so‘ng amalga oshiriladi.";
 
     client.addEventHandler(
         async (event) => {
