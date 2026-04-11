@@ -156,9 +156,14 @@ export async function initBalanceClient() {
     console.log('📡 UZCARD SMS listener ishga tushmoqda...');
 
     const ORDERS_CHANNEL = String(process.env.ORDERS_CHANNEL || "-1003752422150");
+    const PREMIUMSEND_CHANNEL = String(process.env.PREMIUMSEND_CHANNEL || "-1003606510579");
     const ERROR_LOG_CHANNEL_ID = String(process.env.ERROR_LOG_CHANNEL_ID || "-1003836618718");
     const BOT_TOKEN = process.env.BOT_TOKEN;
     const pendingUzcardPayments = []; // monitoring uchun
+
+    // Kanallar array - ikkala kanalni tekshirish uchun
+    const MONITORED_CHANNELS = [ORDERS_CHANNEL, PREMIUMSEND_CHANNEL];
+    console.log(`📡 Monitoring kanallar: ORDERS=${ORDERS_CHANNEL}, PREMIUM=${PREMIUMSEND_CHANNEL}`);
 
     // Premium avto javoblar uchun xotira
     const autoRepliedUsers = new Set();
@@ -216,17 +221,32 @@ export async function initBalanceClient() {
                     }
                 }
 
-                // Orders Channel handler (ortiqcha to'lovlarni aniqlash uchun)
-                if (peerId === ORDERS_CHANNEL || `-${peerId}` === ORDERS_CHANNEL || `-100${peerId}` === ORDERS_CHANNEL) {
-                    const sumMatch = text.match(/💰 Summa:\s*([\d, ]+)\s*so'm/i);
+                // ==========================================
+                // 📡 ORDERS + PREMIUM CHANNEL HANDLER (2 kanalni kuzatish)
+                // ==========================================
+                // Channel ID ni normalize qilish (har xil formatlarni qo'llab-quvvatlash)
+                const normalizeChannelId = (id) => String(id).replace(/^-100/, '').replace(/^-/, '');
+                const normalizedPeerId = normalizeChannelId(peerId);
+                
+                const isMonitoredChannel = MONITORED_CHANNELS.some(ch => 
+                    normalizeChannelId(ch) === normalizedPeerId
+                );
+
+                if (isMonitoredChannel) {
+                    // 💰 Summa: 175,000 so'm formatidan summa ajratish
+                    // Turli formatlarni qo'llab-quvvatlash: 175,000 | 175 000 | 175.000
+                    const sumMatch = text.match(/💰\s*Summa:\s*([\d,.\s\u00A0]+)\s*so['']?m/i);
                     if (sumMatch) {
-                        const orderSum = parseInt(sumMatch[1].replace(/[\s,]/g, ''), 10);
-                        if (orderSum) {
-                            console.log(`✅ [ORDERS_CHANNEL] Order sum detected: ${orderSum}`);
+                        // Barcha raqam bo'lmagan belgilarni olib tashlash
+                        const orderSum = parseInt(sumMatch[1].replace(/[^\d]/g, ''), 10);
+                        if (orderSum && orderSum > 0) {
+                            const isOrdersChannel = normalizeChannelId(ORDERS_CHANNEL) === normalizedPeerId;
+                            const channelName = isOrdersChannel ? 'ORDERS' : 'PREMIUM';
+                            console.log(`✅ [${channelName}_CHANNEL] Order sum detected: ${orderSum} so'm`);
                             const matchIndex = pendingUzcardPayments.findIndex(p => p.amount === orderSum);
                             if (matchIndex !== -1) {
                                 pendingUzcardPayments.splice(matchIndex, 1);
-                                console.log(`✅ [Monitoring] ${orderSum} so'm to'lov o'z egasini topdi.`);
+                                console.log(`✅ [Monitoring] ${orderSum} so'm to'lov o'z egasini topdi (${channelName} kanalda).`);
                             }
                         }
                     }
@@ -312,10 +332,10 @@ export async function initBalanceClient() {
             const p = pendingUzcardPayments[i];
             // 5 daqiqadan oshgan bo'lsa (5 * 60 * 1000 = 300000 ms)
             if (now - p.timestamp > 300000) {
-                console.log(`⚠️ Tizimda qolib ketgan to'lov (${p.amount})! Kanalga yuborilmoqda...`);
+                console.log(`⚠️ Tizimda qolib ketgan to'lov (${p.amount})! Ikkala kanalda ham topilmadi - Error kanalga yuborilmoqda...`);
                 
                 if (BOT_TOKEN && ERROR_LOG_CHANNEL_ID) {
-                    const message = `⚠️ <b>XATO tolov</b>\n\n📝 <b>To'lov xabari:</b>\n<code>${p.text}</code>\n\n📌 Iltimos, bu to'lov nima uchun kelganini tekshiring!`;
+                    const message = `⚠️ <b>XATO tolov - 5 daqiqa ichida topilmadi</b>\n\n📝 <b>To'lov xabari:</b>\n<code>${p.text}</code>\n\n💰 <b>Summa:</b> ${p.amount.toLocaleString()} so'm\n\n📡 <b>Kuzatilgan kanallar:</b>\n• ORDERS_CHANNEL\n• PREMIUMSEND_CHANNEL\n\n📌 Ikkala kanalda ham bu summaga mos order topilmadi!\nIltimos, bu to'lov nima uchun kelganini tekshiring!`;
                     fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -332,7 +352,7 @@ export async function initBalanceClient() {
         }
     }, 60000);
 
-    console.log('✅ UZCARD SMS listener tayyor!');
+    console.log('✅ UZCARD SMS listener tayyor! (2 kanal monitoring: ORDERS + PREMIUM)');
 
     // AutoReconnect ni background da ishga tushirish
     autoReconnect(client).catch((e) => console.error("autoReconnect failed:", e));
