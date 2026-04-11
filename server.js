@@ -1181,6 +1181,7 @@ function getGiftPriceSlotsInfo(giftStars) {
 // ======================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ORDERS_CHANNEL = -1003752422150;
+const ERROR_LOG_CHANNEL_ID = -1003836618718;
 const SUBSCRIPTION_CHANNEL = "@starsjoyuz"; // Obuna bo'lish kerak bo'lgan kanal
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://vitahealth.uz";
 let bot = null;
@@ -3713,8 +3714,74 @@ app.post("/api/admin/premium/resend/:id", adminAuth, async (req, res) => {
     return res.status(500).json({ error: "Server xatosi" });
   }
 });
+
 // ===============================
-// � ADMIN — GET ALL USERS
+// 👑 ADMIN — MANUAL PREMIUM ORDER (Akkauntga kirib qo'lda yuborish uchun)
+// ===============================
+app.post("/api/admin/premium/manual", adminAuth, async (req, res) => {
+  try {
+    const { recipient_username, plan } = req.body;
+    
+    if (!recipient_username || !plan) {
+      return res.status(400).json({ error: "recipient_username va plan kerak" });
+    }
+    
+    if (!["1_oy", "1_yil"].includes(plan)) {
+      return res.status(400).json({ error: "Plan faqat '1_oy' yoki '1_yil' bo'lishi kerak" });
+    }
+    
+    // Plan ga qarab summa va type_amount
+    const summ = plan === "1_oy" ? 57000 : 320000;
+    const type_amount = plan; // "1_oy" yoki "1_yil"
+    const months = plan === "1_oy" ? 1 : 12;
+    
+    // Username ni tozalash
+    const cleanUsername = recipient_username.replace(/^@/, '').trim();
+    
+    if (!cleanUsername) {
+      return res.status(400).json({ error: "Username bo'sh bo'lishi mumkin emas" });
+    }
+    
+    const orderId = crypto.randomUUID();
+    
+    // Order yaratish - darhol premium_sent statusda
+    const result = await pool.query(
+      `INSERT INTO orders (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, created_at)
+       VALUES ($1, $2, $3, $4, 'premium', $5, $6, 'admin_manual', 'completed', 'premium_sent', NOW())
+       RETURNING *`,
+      [orderId, null, cleanUsername, cleanUsername, type_amount, summ]
+    );
+    
+    const order = result.rows[0];
+    console.log(`👑 Manual Premium Order yaratildi: #${order.id} → @${cleanUsername} (${plan})`);
+    
+    // 📢 Orders kanalga xabar yuborish
+    if (bot) {
+      const planText = plan === "1_oy" ? "1 oy" : "1 yil";
+      const message = `👑 <b>Yangi Premium sotildi!</b>\n\n` +
+        `📦 Order: #${order.id}\n` +
+        `👤 @ozidan -> @${cleanUsername}\n` +
+        `💫 Miqdor: ${planText} (akkauntga kirib)\n` +
+        `💰 Summa: ${summ.toLocaleString()} so'm\n` +
+        `✅ Status: Yetkazildi`;
+      
+      try {
+        await bot.telegram.sendMessage(ORDERS_CHANNEL, message, { parse_mode: 'HTML' });
+        console.log(`📢 Manual premium order xabari kanalga yuborildi`);
+      } catch (notifErr) {
+        console.error("❌ Kanal xabari yuborishda xato:", notifErr.message);
+      }
+    }
+    
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error("❌ /api/admin/premium/manual ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
+// ===============================
+// 👤 ADMIN — GET ALL USERS
 // ===============================
 app.get("/api/admin/users", adminAuth, async (req, res) => {
   try {
@@ -6537,16 +6604,34 @@ async function sendUnifiedChannelNotification(order, type, isFailed = false) {
   const statusText = isFailed 
     ? `❌ Status: To'langan, ammo yetkazilmadi (failed)` 
     : `✅ Status: Yetkazildi`;
+    
+  let senderUsername = "Noma'lum";
+  if (order.owner_user_id) {
+    try {
+      const userRes = await pool.query("SELECT username FROM users WHERE user_id = $1", [order.owner_user_id]);
+      if (userRes.rows.length > 0 && userRes.rows[0].username) {
+        senderUsername = userRes.rows[0].username;
+      }
+    } catch (e) {
+      console.error("Yuboruvchi aniqlashda xato:", e);
+    }
+  }
+
+  const rawRecipient = order.recipient_username || order.recipient || "Noma'lum";
+  const formattedSender = senderUsername.startsWith('@') ? senderUsername : `@${senderUsername}`;
+  const formattedRecipient = rawRecipient.startsWith('@') ? rawRecipient : `@${rawRecipient}`;
   
   const message = `${emoji} ${title}\n\n` +
     `📦 Order: #${order.id}\n` +
-    `👤 Oluvchi: ${order.recipient_username || order.recipient}\n` +
+    `👤 ${formattedSender} -> ${formattedRecipient}\n` +
     `💫 Miqdor: ${order.type_amount} ${type === 'premium' ? 'oy' : 'stars'}\n` +
     `💰 Summa: ${order.summ.toLocaleString()} so'm\n` +
     statusText;
   
+  const targetChannel = isFailed ? ERROR_LOG_CHANNEL_ID : ORDERS_CHANNEL;
+  
   try {
-    await bot.telegram.sendMessage(ORDERS_CHANNEL, message, { parse_mode: 'HTML' });
+    await bot.telegram.sendMessage(targetChannel, message, { parse_mode: 'HTML' });
   } catch (err) {
     console.error("❌ Channel notification error:", err.message);
   }
