@@ -3732,7 +3732,7 @@ app.post("/api/admin/premium/manual", adminAuth, async (req, res) => {
     
     // Plan ga qarab summa va type_amount
     const summ = plan === "1_oy" ? 57000 : 320000;
-    const type_amount = plan; // "1_oy" yoki "1_yil"
+    const type_amount = plan === "1_oy" ? 1 : 12; // Baza integer qabul qiladi
     const months = plan === "1_oy" ? 1 : 12;
     
     // Username ni tozalash
