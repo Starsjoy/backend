@@ -3744,34 +3744,16 @@ app.post("/api/admin/premium/manual", adminAuth, async (req, res) => {
     
     const orderId = crypto.randomUUID();
     
-    // Order yaratish - darhol premium_sent statusda
+    // Order yaratish - darhol delivered statusda
     const result = await pool.query(
       `INSERT INTO orders (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, created_at)
-       VALUES ($1, $2, $3, $4, 'premium', $5, $6, 'admin_manual', 'completed', 'premium_sent', NOW())
+       VALUES ($1, $2, $3, $4, 'premium', $5, $6, 'admin_manual', 'completed', 'delivered', NOW())
        RETURNING *`,
       [orderId, null, cleanUsername, cleanUsername, type_amount, summ]
     );
     
     const order = result.rows[0];
     console.log(`👑 Manual Premium Order yaratildi: #${order.id} → @${cleanUsername} (${plan})`);
-    
-    // 📢 Orders kanalga xabar yuborish
-    if (bot) {
-      const planText = plan === "1_oy" ? "1 oy" : "1 yil";
-      const message = `👑 <b>Yangi Premium sotildi!</b>\n\n` +
-        `📦 Order: #${order.id}\n` +
-        `👤 @ozidan -> @${cleanUsername}\n` +
-        `💫 Miqdor: ${planText} (akkauntga kirib)\n` +
-        `💰 Summa: ${summ.toLocaleString()} so'm\n` +
-        `✅ Status: Yetkazildi`;
-      
-      try {
-        await bot.telegram.sendMessage(ORDERS_CHANNEL, message, { parse_mode: 'HTML' });
-        console.log(`📢 Manual premium order xabari kanalga yuborildi`);
-      } catch (notifErr) {
-        console.error("❌ Kanal xabari yuborishda xato:", notifErr.message);
-      }
-    }
     
     res.json({ success: true, order });
   } catch (err) {
