@@ -27,24 +27,24 @@ async function check() {
     `);
     console.log('Total pending orders:', total.rows[0].total);
     
-    // Old pending orders (older than 5 minutes)
+    // Old pending orders (older than 8 minutes)
     const old = await pool.query(`
       SELECT COUNT(*) as old_count 
       FROM orders 
       WHERE status = 'pending' AND payment_status = 'pending'
-        AND created_at < (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'
+        AND created_at < (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '8 minutes'
     `);
-    console.log('Old pending orders (>5 min):', old.rows[0].old_count);
+    console.log('Old pending orders (>8 min):', old.rows[0].old_count);
     
     // Recent pending orders by stars amount (for slot analysis)
     const recent = await pool.query(`
       SELECT type_amount, summ, created_at 
       FROM orders 
       WHERE order_type = 'stars' AND status = 'pending' AND payment_status = 'pending'
-        AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '5 minutes'
+        AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '8 minutes'
       ORDER BY type_amount, summ
     `);
-    console.log('\n⭐ Recent pending STARS orders (last 5 min):');
+    console.log('\n⭐ Recent pending STARS orders (last 8 min):');
     console.table(recent.rows);
     
   } catch (err) {

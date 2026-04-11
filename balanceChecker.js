@@ -167,8 +167,33 @@ export async function initBalanceClient() {
 
     // Premium avto javoblar uchun xotira
     const autoRepliedUsers = new Set();
-    const PREMIUM_1_MONTH_MSG = "1 oylik Telegram Premium profilingizga kirib, to‘g‘ridan-to‘g‘ri ulab beriladi.\n\nNarxi: 57 000 so‘m\n\nTo‘lovni qilganingizdan keyin chekni yuboring. So‘ng siz bilan qulay vaqtni kelishib, xizmatni ulab beramiz.\n\nTo‘lov uchun karta:\n5614 6887 0424 9142\nSh. F\n\nXizmat to‘lovdan so‘ng amalga oshiriladi.";
-    const PREMIUM_1_YEAR_MSG = "1 yillik Telegram Premium profilingizga kirib, to‘g‘ridan-to‘g‘ri ulab beriladi.\n\nNarxi: 320 000 so‘m\n\nTo‘lovni qilganingizdan keyin chekni yuboring. So‘ng siz bilan qulay vaqtni kelishib, xizmatni ulab beramiz.\n\nTo‘lov uchun karta:\n5614 6887 0424 9142\nSh. F\n\nXizmat to‘lovdan so‘ng amalga oshiriladi.";
+    const PREMIUM_1_MONTH_MSG = `Va alaykum assalom.
+
+1 oylik Telegram Premium profilingizga kirib, to‘g‘ridan-to‘g‘ri ulab beriladi.
+
+Narxi: 57 000 so‘m
+
+To‘lovni qilganingizdan keyin chekni yuboring. So‘ng siz bilan qulay vaqtni kelishib, xizmatni ulab beramiz.
+
+To‘lov uchun karta:
+\`5614 6887 0424 9142\`
+Sh. F
+
+Xizmat to‘lovdan so‘ng amalga oshiriladi.`;
+
+    const PREMIUM_1_YEAR_MSG = `Va alaykum assalom.
+
+1 yillik Telegram Premium profilingizga kirib, to‘g‘ridan-to‘g‘ri ulab beriladi.
+
+Narxi: 320 000 so‘m
+
+To‘lovni qilganingizdan keyin chekni yuboring. So‘ng siz bilan qulay vaqtni kelishib, xizmatni ulab beramiz.
+
+To‘lov uchun karta:
+\`5614 6887 0424 9142\`
+Sh. F
+
+Xizmat to‘lovdan so‘ng amalga oshiriladi.`;
 
     client.addEventHandler(
         async (event) => {
@@ -202,20 +227,13 @@ export async function initBalanceClient() {
                         // Faqatgina 1 marotaba ishlashini ta'minlash (spamning oldini olish)
                         autoRepliedUsers.add(peerId);
 
-                        // 2 daqiqadan so'ng 1-xabar: "Assalomu alaykum, yaxshimisiz?"
-                        setTimeout(async () => {
-                            try {
-                                await client.sendMessage(peerId, { message: "Assalomu alaykum, yaxshimisiz?" });
-                            } catch(e) { console.error("❌ Auto-reply msg1 error:", e); }
-                        }, 2 * 60 * 1000);
-
-                        // 3 daqiqadan so'ng 2-xabar: To'lov rekvizitlari bilan
+                        // 1 daqiqadan so'ng yagona xabar: To'lov rekvizitlari bilan
                         setTimeout(async () => {
                             try {
                                 const finalMsg = premiumPlan === "1_month" ? PREMIUM_1_MONTH_MSG : PREMIUM_1_YEAR_MSG;
-                                await client.sendMessage(peerId, { message: finalMsg });
-                            } catch(e) { console.error("❌ Auto-reply msg2 error:", e); }
-                        }, 3 * 60 * 1000);
+                                await client.sendMessage(peerId, { message: finalMsg, parseMode: "markdown" });
+                            } catch(e) { console.error("❌ Auto-reply msg error:", e); }
+                        }, 1 * 60 * 1000);
                         
                         return; // O'zgartirish kerak emas, log qilinmaydi uzcard xabar sifatida
                     }
@@ -330,8 +348,8 @@ export async function initBalanceClient() {
         const now = Date.now();
         for (let i = pendingUzcardPayments.length - 1; i >= 0; i--) {
             const p = pendingUzcardPayments[i];
-            // 5 daqiqadan oshgan bo'lsa (5 * 60 * 1000 = 300000 ms)
-            if (now - p.timestamp > 300000) {
+            // 5 daqiqadan oshgan bo'lsa (5 * 60 * 1000 = 480000 ms)
+            if (now - p.timestamp > 480000) {
                 console.log(`⚠️ Tizimda qolib ketgan to'lov (${p.amount})! Ikkala kanalda ham topilmadi - Error kanalga yuborilmoqda...`);
                 
                 if (BOT_TOKEN && ERROR_LOG_CHANNEL_ID) {
