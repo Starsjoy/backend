@@ -2849,7 +2849,9 @@ async function sendStarsToUser(order) {
       // 📢 Xato kanalga xabar
       sendUnifiedChannelNotification(order, 'stars', true).catch(err => console.error("Notif err:", err.message));
       
-      throw new Error("Purchase error: " + JSON.stringify(data));
+      const errDetail = new Error("Purchase error: " + JSON.stringify(data));
+        errDetail.notified = true;
+        throw errDetail;
     }
     const txId = data.transaction_id;
     await pool.query(
@@ -2880,7 +2882,7 @@ async function sendStarsToUser(order) {
     removePriceFromCacheByOrderId(orderId);
     
     // 📢 Xato kanalga xabar
-    sendUnifiedChannelNotification(order, 'stars', true).catch(notifErr => console.error("Notif error:", notifErr));
+      if (!err.notified) { sendUnifiedChannelNotification(order, 'stars', true).catch(notifErr => console.error("Notif error:", notifErr)); }
 
     throw err;
   }
@@ -5520,9 +5522,9 @@ const uniqueSum = await generateUniqueOrderSum(finalAmount, client);
         [
           orderId,
           ownerUserId,
-          tgUser?.username || 'unknown',
-          cleanUsername,
-          serverStars,
+            cleanUsername,
+            cleanUsername,
+            serverStars,
           uniqueSum,
           giftId,
           anonymous === true,
@@ -5772,9 +5774,9 @@ async function sendGiftToUser(order) {
       // 📢 Xato kanalga xabar
       sendUnifiedChannelNotification(order, 'gift', true).catch(err => console.error("Notif err:", err.message));
       
-      const err = new Error(giftData.error || "Gift yuborishda xato");
-      err.notified = true;
-      throw err;
+      const errDetail = new Error(giftData.error || "Gift yuborishda xato");
+        errDetail.notified = true;
+        throw errDetail;
     }
     // Muvaffaqiyatli — statusni yangilash
     await pool.query(
@@ -5800,7 +5802,7 @@ async function sendGiftToUser(order) {
     removePriceFromCacheByOrderId(order.id); // 🧹 Cache don't stuck with errored pending slot
     
     // 📢 Xato kanalga xabar
-    sendUnifiedChannelNotification(order, 'gift', true).catch(err => console.error("Notif err:", err.message));
+      if (!err.notified) { sendUnifiedChannelNotification(order, 'gift', true).catch(err => console.error("Notif err:", err.message)); }
     
     throw err;
   }
@@ -6600,14 +6602,12 @@ async function sendUnifiedChannelNotification(order, type, isFailed = false) {
   }
 
   const rawRecipient = order.recipient_username || order.recipient || "Noma'lum";
-  const formattedSender = senderUsername.startsWith('@') ? senderUsername : `@${senderUsername}`;
-  const formattedRecipient = rawRecipient.startsWith('@') ? rawRecipient : `@${rawRecipient}`;
+  const formattedSender = '@' + senderUsername.trim().replace(/^@/, '').replace(/\s+/g, '_');
+  const formattedRecipient = '@' + rawRecipient.trim().replace(/^@/, '').replace(/\s+/g, '_');
   
   const message = `${emoji} ${title}\n\n` +
     `📦 Order: #${order.id}\n` +
-    `👤 ${formattedSender} -> ${formattedRecipient}\n` +
-    `💫 Miqdor: ${order.type_amount} ${type === 'premium' ? 'oy' : 'stars'}\n` +
-    `💰 Summa: ${order.summ.toLocaleString()} so'm\n` +
+      `${formattedSender}->${formattedRecipient}\n` +
     statusText;
   
   const targetChannel = isFailed ? ERROR_LOG_CHANNEL_ID : ORDERS_CHANNEL;
@@ -6960,3 +6960,6 @@ loadPendingOrdersToCache().then(() => {
 });
 
 app.listen(PORT, () => console.log(`🚀 Backend running on port ${PORT}`));
+
+
+
