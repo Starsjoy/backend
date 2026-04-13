@@ -253,7 +253,7 @@ Xizmat to‘lovdan so‘ng amalga oshiriladi.`;
                 if (isMonitoredChannel) {
                     // 💰 Summa: 175,000 so'm formatidan summa ajratish
                     // Turli formatlarni qo'llab-quvvatlash: 175,000 | 175 000 | 175.000
-                    const sumMatch = text.match(/💰\s*(?:To['`’‘]?lov\s+)?summa(?:si)?:\s*([\d,.\s\u00A0]+)\s*so['`’‘]?m/i);
+                    const sumMatch = text.match(/💰\s*Summa:\s*([\d,.\s\u00A0]+)\s*so['']?m/i);
                     if (sumMatch) {
                         // Barcha raqam bo'lmagan belgilarni olib tashlash
                         const orderSum = parseInt(sumMatch[1].replace(/[^\d]/g, ''), 10);
@@ -348,8 +348,8 @@ Xizmat to‘lovdan so‘ng amalga oshiriladi.`;
         const now = Date.now();
         for (let i = pendingUzcardPayments.length - 1; i >= 0; i--) {
             const p = pendingUzcardPayments[i];
-            // 5 daqiqadan oshgan bo'lsa (5 * 60 * 1000 = 300000 ms)
-            if (now - p.timestamp > 300000) {
+            // 5 daqiqadan oshgan bo'lsa (5 * 60 * 1000 = 480000 ms)
+            if (now - p.timestamp > 480000) {
                 console.log(`⚠️ Tizimda qolib ketgan to'lov (${p.amount})! Ikkala kanalda ham topilmadi - Error kanalga yuborilmoqda...`);
                 
                 if (BOT_TOKEN && ERROR_LOG_CHANNEL_ID) {
@@ -631,4 +631,3 @@ if (process.argv[1]?.includes('balanceChecker')) {
         process.exit(0);
     });
 }
-
