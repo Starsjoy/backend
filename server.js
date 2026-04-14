@@ -1180,8 +1180,15 @@ function getGiftPriceSlotsInfo(giftStars) {
 // 🤖 TELEGRAM BOT - Buyurtmalar kanaliga xabar yuborish
 // ======================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ORDERS_CHANNEL = -1003752422150;
-const ERROR_LOG_CHANNEL_ID = -1003836618718;
+
+function parseTelegramChatId(envVal, fallback) {
+  if (envVal === undefined || envVal === null || String(envVal).trim() === '') return fallback;
+  const n = Number(String(envVal).trim());
+  return Number.isFinite(n) ? n : fallback;
+}
+
+const ORDERS_CHANNEL = parseTelegramChatId(process.env.ORDERS_CHANNEL, -1003752422150);
+const ERROR_LOG_CHANNEL_ID = parseTelegramChatId(process.env.ERROR_LOG_CHANNEL_ID, -1003836618718);
 const SUBSCRIPTION_CHANNEL = "@starsjoyuz"; // Obuna bo'lish kerak bo'lgan kanal
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://vitahealth.uz";
 let bot = null;
@@ -1239,6 +1246,57 @@ async function notifyOrdersChannel(message) {
     console.log('✅ Orders channel ga xabar yuborildi');
   } catch (err) {
     console.error('❌ Orders channel xabari yuborishda xato:', err.message);
+  }
+}
+
+/** Admin panel: qo'lda premium — ORDERS_CHANNEL (.env) ga BOT_TOKEN orqali */
+async function sendManualPremiumSoldChannelMessage(order, plan, adminUser) {
+  const token = process.env.BOT_TOKEN;
+  const channelId = ORDERS_CHANNEL;
+  const adminUsername = adminUser?.username;
+  const adminLine = adminUsername
+    ? (String(adminUsername).startsWith('@') ? String(adminUsername) : `@${adminUsername}`)
+    : 'Admin';
+  const rawRecipient = order.recipient_username || order.recipient || "Noma'lum";
+  const recipientLine = String(rawRecipient).startsWith('@') ? String(rawRecipient) : `@${rawRecipient}`;
+  const miqdorLabel = plan === '1_yil' ? '1 yil (akkauntga kirib)' : '1 oy (akkauntga kirib)';
+  const summNum = Number(order.summ) || 0;
+  const message =
+    `👑 <b>Yangi Premium sotildi!</b>\n\n` +
+    `📦 Order: #${order.id}\n` +
+    `👤 ${adminLine} -> ${recipientLine}\n` +
+    `💫 Miqdor: ${miqdorLabel}\n` +
+    `💰 Summa: ${summNum.toLocaleString()} so'm\n` +
+    `✅ Status: Yetkazildi`;
+
+  try {
+    if (bot) {
+      await bot.telegram.sendMessage(channelId, message, { parse_mode: 'HTML' });
+      console.log(`✅ Manual premium: orders channel #${order.id}`);
+      return;
+    }
+    if (token) {
+      const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: channelId,
+          text: message,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!data.ok) {
+        console.error('❌ Manual premium orders channel (API):', data.description || response.status);
+      } else {
+        console.log(`✅ Manual premium: orders channel (API) #${order.id}`);
+      }
+      return;
+    }
+    console.warn("⚠️ Manual premium: BOT_TOKEN yo'q — kanalga xabar yuborilmadi");
+  } catch (err) {
+    console.error('❌ Manual premium orders channel:', err.message);
   }
 }
 // ======================
@@ -3754,7 +3812,11 @@ app.post("/api/admin/premium/manual", adminAuth, async (req, res) => {
     
     const order = result.rows[0];
     console.log(`👑 Manual Premium Order yaratildi: #${order.id} → @${cleanUsername} (${plan})`);
-    
+
+    sendManualPremiumSoldChannelMessage(order, plan, req.adminUser).catch((e) =>
+      console.error('❌ Manual premium kanal xabari:', e.message)
+    );
+
     res.json({ success: true, order });
   } catch (err) {
     console.error("❌ /api/admin/premium/manual ERROR:", err);
@@ -5520,7 +5582,7 @@ const uniqueSum = await generateUniqueOrderSum(finalAmount, client);
         [
           orderId,
           ownerUserId,
-          tgUser?.username || 'unknown',
+          cleanUsername,
           cleanUsername,
           serverStars,
           uniqueSum,
@@ -5627,11 +5689,11 @@ Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
       }
     }, 5 * 60 * 1000);
 
-    // Backward compatible response
+    // username / recipient_username — oluvchi (stars/premium bilan bir xil ma'noda)
     res.json({
       id: order.id,
       username: order.recipient_username,
-      recipient_username: cleanUsername,
+      recipient_username: order.recipient_username,
       gift_id: order.gift_id,
       stars: order.type_amount,
       amount: order.summ,
@@ -5665,11 +5727,10 @@ app.get("/api/gift/status/:id", telegramAuth, async (req, res) => {
     const order = result.rows[0];
     // Backward compatible status mapping
     const legacyStatus = order.status === 'completed' ? 'gift_sent' : order.status;
-    // Backward compatible response
     res.json({
       id: order.id,
       username: order.recipient_username,
-      recipient_username: order.recipient,
+      recipient_username: order.recipient_username,
       gift_id: order.gift_id,
       stars: order.type_amount,
       amount: order.summ,
@@ -5714,7 +5775,7 @@ app.post("/api/gift/match", internalAuth, async (req, res) => {
       return res.status(404).json({ message: "Pending gift payment not found" });
     }
     const order = updated.rows[0];
-    console.log(`🎉 Gift to'lov tasdiqlandi: #${order.id} | ${order.recipient_username} → @${order.recipient} | ${order.summ} so'm`);
+    console.log(`🎉 Gift to'lov tasdiqlandi: #${order.id} | oluvchi: @${order.recipient_username} | ${order.summ} so'm`);
     
     // Gift yuborish
     sendGiftToUser(order)
@@ -5725,11 +5786,10 @@ app.post("/api/gift/match", internalAuth, async (req, res) => {
         console.error(`❌ Gift yuborishda xato #${order.id}:`, err.message);
       });
     
-    // Backward compatible response
     res.json({
       id: order.id,
       username: order.recipient_username,
-      recipient_username: order.recipient,
+      recipient_username: order.recipient_username,
       gift_id: order.gift_id,
       amount: order.summ,
       status: order.status,
@@ -5745,7 +5805,7 @@ app.post("/api/gift/match", internalAuth, async (req, res) => {
 // ======================
 async function sendGiftToUser(order) {
   try {
-    // order.recipient = qabul qiluvchi username, order.recipient_username = yuboruvchi
+    // recipient / recipient_username — qabul qiluvchi (username); yuboruvchi owner_user_id + users jadvali
     console.log(`🎁 sendGiftToUser: #${order.id} → @${order.recipient} | gift: ${order.gift_id}`);
     // balanceChecker.js dagi userbot orqali gift yuborish
     const giftRes = await fetch('http://localhost:5002/api/gift/send-userbot', {
