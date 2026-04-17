@@ -165,36 +165,6 @@ export async function initBalanceClient() {
     const MONITORED_CHANNELS = [ORDERS_CHANNEL, PREMIUMSEND_CHANNEL];
     console.log(`📡 Monitoring kanallar: ORDERS=${ORDERS_CHANNEL}, PREMIUM=${PREMIUMSEND_CHANNEL}`);
 
-    // Premium avto javoblar uchun xotira
-    const autoRepliedUsers = new Set();
-    const PREMIUM_1_MONTH_MSG = `Va alaykum assalom.
-
-1 oylik Telegram Premium profilingizga kirib, to‘g‘ridan-to‘g‘ri ulab beriladi.
-
-Narxi: 57 000 so‘m
-
-To‘lovni qilganingizdan keyin chekni yuboring. So‘ng siz bilan qulay vaqtni kelishib, xizmatni ulab beramiz.
-
-To‘lov uchun karta:
-\`5614 6887 0424 9142\`
-Sh. F
-
-Xizmat to‘lovdan so‘ng amalga oshiriladi.`;
-
-    const PREMIUM_1_YEAR_MSG = `Va alaykum assalom.
-
-1 yillik Telegram Premium profilingizga kirib, to‘g‘ridan-to‘g‘ri ulab beriladi.
-
-Narxi: 320 000 so‘m
-
-To‘lovni qilganingizdan keyin chekni yuboring. So‘ng siz bilan qulay vaqtni kelishib, xizmatni ulab beramiz.
-
-To‘lov uchun karta:
-\`5614 6887 0424 9142\`
-Sh. F
-
-Xizmat to‘lovdan so‘ng amalga oshiriladi.`;
-
     client.addEventHandler(
         async (event) => {
             try {
@@ -209,35 +179,6 @@ Xizmat to‘lovdan so‘ng amalga oshiriladi.`;
                 const peerId = rawPeerId?.value !== undefined ? String(rawPeerId.value) : String(rawPeerId);
 
                 const text = msg.message || "";
-
-                // ==========================================
-                // 🎫 PRIVATE CHAT AUTO-REPLY (Premium olganda)
-                // ==========================================
-                if (event.isPrivate) {
-                    let premiumPlan = null;
-                    if (text === "Assalomu aleykum, 1 oylik premium olmoqchi edim.") {
-                        premiumPlan = "1_month";
-                    } else if (text === "Assalomu aleykum, 1 yillik premium olmoqchi edim.") {
-                        premiumPlan = "1_year";
-                    }
-
-                    if (premiumPlan && !autoRepliedUsers.has(peerId)) {
-                        console.log(`🤖 [Auto-reply] ${peerId} foydalanuvchiga premium ulanish boshlandi: ${premiumPlan}`);
-                        
-                        // Faqatgina 1 marotaba ishlashini ta'minlash (spamning oldini olish)
-                        autoRepliedUsers.add(peerId);
-
-                        // 1 daqiqadan so'ng yagona xabar: To'lov rekvizitlari bilan
-                        setTimeout(async () => {
-                            try {
-                                const finalMsg = premiumPlan === "1_month" ? PREMIUM_1_MONTH_MSG : PREMIUM_1_YEAR_MSG;
-                                await client.sendMessage(peerId, { message: finalMsg, parseMode: "markdown" });
-                            } catch(e) { console.error("❌ Auto-reply msg error:", e); }
-                        }, 1 * 60 * 1000);
-                        
-                        return; // O'zgartirish kerak emas, log qilinmaydi uzcard xabar sifatida
-                    }
-                }
 
                 // ==========================================
                 // 📡 ORDERS + PREMIUM CHANNEL HANDLER (2 kanalni kuzatish)
