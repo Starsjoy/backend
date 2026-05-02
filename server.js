@@ -274,6 +274,16 @@ const referralLeaderboardCache = {
   TTL: 30 * 1000,
 };
 
+/** Savdo TOP ro‘yxatida ko‘rsatilmasligi kerak bo‘lgan owner_user_id lar */
+const LEADERBOARD_EXCLUDED_OWNER_IDS = new Set(["6568473441"]);
+
+function filterSalesLeaderboardTop10(rows) {
+  if (!rows?.length) return [];
+  return rows
+    .filter((r) => !LEADERBOARD_EXCLUDED_OWNER_IDS.has(String(r.owner_user_id)))
+    .slice(0, 10);
+}
+
 function getCachedLeaderboard() {
   if (leaderboardCache.data && Date.now() - leaderboardCache.timestamp < leaderboardCache.TTL) {
     return leaderboardCache.data;
@@ -3939,7 +3949,7 @@ app.get("/api/dashboard/init", telegramAuth, async (req, res) => {
         FROM order_totals ot
         LEFT JOIN users u ON u.user_id = ot.owner_user_id
       )
-      SELECT * FROM ranked ORDER BY rank LIMIT 10
+      SELECT * FROM ranked ORDER BY rank LIMIT 100
     `);
     
     const referralLeaderboardPromise = referralTop10 ? Promise.resolve({ rows: referralTop10 }) : pool.query(`
@@ -4041,10 +4051,12 @@ app.get("/api/dashboard/init", telegramAuth, async (req, res) => {
     
     const duration = Date.now() - startTime;
     console.log(`🚀 Dashboard init: ${duration}ms (cached: ${leaderboardTop10 ? 'yes' : 'no'})`);
-    
+
+    const salesTop10 = filterSalesLeaderboardTop10(leaderboardResult.rows);
+
     res.json({
       leaderboard: {
-        top10: leaderboardResult.rows,
+        top10: salesTop10,
         me: myRankResult.rows[0] || null
       },
       referralLeaderboard: {
@@ -4141,9 +4153,9 @@ app.get("/api/stats/leaderboard", telegramAuth, async (req, res) => {
     const result = await pool.query(query);
     const rows = result.rows;
     console.log("📊 Leaderboard results count:", rows.length);
-    const top10 = rows.slice(0, 10);
+    const top10 = filterSalesLeaderboardTop10(rows);
     const me = myUserId
-      ? rows.find((r) => r.owner_user_id === myUserId) || null
+      ? rows.find((r) => String(r.owner_user_id) === String(myUserId)) || null
       : null;
     res.json({
       top10,
@@ -5183,16 +5195,18 @@ app.post("/api/referral/withdraw", authLimiter, telegramAuth, async (req, res) =
       "5170564780938756245", "6028601630662853006",
       "5922558454332916696", "5801108895304779062",
       "5800655655995968830", "5956217000635139069",
-      "5168043875654172773", "5170690322832818290", 
-      "5170521118301225164",
+      "5935895822435615975", "5969796561943660080",
+      "5168043875654172773",
+      "5170690322832818290", "5170521118301225164",
     ];
     const GIFT_STARS_WITHDRAW = {
       "5170144170496491616": 50, "5170314324215857265": 50,
       "5170564780938756245": 50, "6028601630662853006": 50,
       "5922558454332916696": 50, "5801108895304779062": 50,
       "5800655655995968830": 50, "5956217000635139069": 50,
-      "5168043875654172773": 100, "5170690322832818290": 100, 
-      "5170521118301225164": 100,
+      "5935895822435615975": 50, "5969796561943660080": 50,
+      "5168043875654172773": 100,
+      "5170690322832818290": 100, "5170521118301225164": 100,
     };
     
     if (!ALLOWED_GIFT_IDS_WITHDRAW.includes(giftId)) {
@@ -5391,8 +5405,10 @@ const ALLOWED_GIFT_IDS = [
   "5170564780938756245", "6028601630662853006",
   "5922558454332916696", "5801108895304779062",
   "5800655655995968830", "5956217000635139069", 
-  "5893356958802511476", "5168043875654172773",
-  "5170690322832818290", "5170521118301225164",
+  "5893356958802511476", "5935895822435615975",
+  "5969796561943660080", "5168043875654172773",
+  "5170690322832818290",
+  "5170521118301225164",
 ];
 const GIFT_PRICE_MAP = { 15: 4500, 25: 6000, 50: 12000, 100: 24000 };
 const GIFT_STARS_MAP = {
@@ -5402,8 +5418,10 @@ const GIFT_STARS_MAP = {
   "5170564780938756245": 50, "6028601630662853006": 50,
   "5922558454332916696": 50, "5801108895304779062": 50,
   "5800655655995968830": 50, "5956217000635139069": 50, 
-  "5893356958802511476": 50, "5168043875654172773": 100,
-  "5170690322832818290": 100, "5170521118301225164": 100,
+  "5893356958802511476": 50, "5935895822435615975": 50,
+  "5969796561943660080": 50, "5168043875654172773": 100,
+  "5170690322832818290": 100,
+  "5170521118301225164": 100,
 };
 // ======================
 // 🎁 GIFT ORDER — Order yaratish (to'lov kutish)
