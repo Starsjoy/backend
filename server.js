@@ -1670,6 +1670,161 @@ pool.on('error', (err) => {
 pool.on('connect', () => {
   console.log('📊 Database connection ochildi');
 });
+
+// ======================
+// 🔔 Stars eslatmasi — 7 kun stars olmaganlarga (kuniga 1 marta, eslatma oralig'i 7 kun)
+// ======================
+const STARS_INACTIVE_REMINDER_TEXT =
+  `🧐 Stars tugab qolmadimi? Yangi starslarni hoziroq oling \n\n/start`;
+
+const STARS_REMINDER_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function parseUserTimestampIso(val) {
+  if (val === undefined || val === null) return null;
+  const s = String(val).trim();
+  if (!s) return null;
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : null;
+}
+
+async function runStarsInactiveReminderJob() {
+  if (!bot) return;
+  const now = Date.now();
+  try {
+    const r = await pool.query(
+      `SELECT id, user_id, username, get_stars_at, send_stars_message_at
+       FROM users
+       WHERE user_id IS NOT NULL AND TRIM(COALESCE(user_id::text, '')) <> ''
+         AND get_stars_at IS NOT NULL AND TRIM(get_stars_at) <> ''`
+    );
+    let sent = 0;
+    for (const row of r.rows) {
+      const lastStars = parseUserTimestampIso(row.get_stars_at);
+      if (lastStars === null || now - lastStars < STARS_REMINDER_WEEK_MS) continue;
+
+      const lastMsg = parseUserTimestampIso(row.send_stars_message_at);
+      if (lastMsg !== null && now - lastMsg < STARS_REMINDER_WEEK_MS) continue;
+
+      try {
+        await bot.telegram.sendMessage(row.user_id, STARS_INACTIVE_REMINDER_TEXT);
+        const iso = new Date().toISOString();
+        await pool.query(
+          `UPDATE users SET send_stars_message_at = $1 WHERE id = $2`,
+          [iso, row.id]
+        );
+        sent++;
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      } catch (sendErr) {
+        console.error(
+          `❌ Stars eslatma (@${row.username}, user_id=${row.user_id}):`,
+          sendErr.message
+        );
+      }
+    }
+    if (sent > 0) {
+      console.log(`📩 Stars inaktiv eslatma: ${sent} ta foydalanuvchiga yuborildi`);
+    }
+  } catch (err) {
+    console.error("❌ Stars inaktiv eslatma job:", err.message);
+  }
+}
+
+// ======================
+// 🔔 Premium eslatmasi — xarid qilingan muddat tugagach (eslatma oralig'i 7 kun)
+// ======================
+function getPremiumReminderThresholdMs(months) {
+  const m = Number(months);
+  if (!Number.isFinite(m) || m <= 0) return null;
+  if (m === 1) return 30 * DAY_MS;
+  if (m === 3) return 91 * DAY_MS;
+  if (m === 6) return 183 * DAY_MS;
+  if (m === 12) return 365 * DAY_MS;
+  return Math.round(m * 30.437) * DAY_MS;
+}
+
+function getPremiumReminderText(months) {
+  const m = Number(months);
+  if (m === 3) {
+    return `👀 3 oy o'tdi, Premiumni davom ettirasizmi? \n\n/start bosing`;
+  }
+  if (m === 6) {
+    return `🥲 Yarim yil o'tdi, 6 oylik premiumingiz tugab qolgandir? \n\nPremiumni yangilash uchun /start bosing`;
+  }
+  if (m === 12) {
+    return `🤯 Yil o'tib ketibdi oradan, qarang. Premiumingiz tugagan bo'lsa /start bosib yana davom ettirinf\n\n/start`;
+  }
+  if (m === 1) {
+    return `⭐ 1 oy o'tdi — Premiumni davom ettirish uchun /start bosing`;
+  }
+  const approxDays = Math.round(m * 30.437);
+  return `📅 Taxminan ${approxDays} kun o'tdi. Premiumni yangilash uchun /start bosing`;
+}
+
+async function runPremiumExpiryReminderJob() {
+  if (!bot) return;
+  const now = Date.now();
+  try {
+    const r = await pool.query(
+      `SELECT id, user_id, username, get_premium_at, last_premium_months, send_premium_message_at
+       FROM users
+       WHERE user_id IS NOT NULL AND TRIM(COALESCE(user_id::text, '')) <> ''
+         AND get_premium_at IS NOT NULL AND TRIM(get_premium_at) <> ''
+         AND last_premium_months IS NOT NULL`
+    );
+    let sent = 0;
+    for (const row of r.rows) {
+      const thresholdMs = getPremiumReminderThresholdMs(row.last_premium_months);
+      if (thresholdMs === null) continue;
+
+      const lastPrem = parseUserTimestampIso(row.get_premium_at);
+      if (lastPrem === null || now - lastPrem < thresholdMs) continue;
+
+      const lastMsg = parseUserTimestampIso(row.send_premium_message_at);
+      if (lastMsg !== null && now - lastMsg < STARS_REMINDER_WEEK_MS) continue;
+
+      const text = getPremiumReminderText(row.last_premium_months);
+      try {
+        await bot.telegram.sendMessage(row.user_id, text);
+        const iso = new Date().toISOString();
+        await pool.query(
+          `UPDATE users SET send_premium_message_at = $1 WHERE id = $2`,
+          [iso, row.id]
+        );
+        sent++;
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      } catch (sendErr) {
+        console.error(
+          `❌ Premium eslatma (@${row.username}, user_id=${row.user_id}):`,
+          sendErr.message
+        );
+      }
+    }
+    if (sent > 0) {
+      console.log(`📩 Premium muddat eslatmasi: ${sent} ta foydalanuvchiga yuborildi`);
+    }
+  } catch (err) {
+    console.error("❌ Premium eslatma job:", err.message);
+  }
+}
+
+async function runDailyReminderJobs() {
+  await runStarsInactiveReminderJob();
+  await runPremiumExpiryReminderJob();
+}
+
+const STARS_REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
+setTimeout(() => {
+  runDailyReminderJobs().catch((e) =>
+    console.error("Kunlik eslatmalar (first run):", e)
+  );
+}, 3 * 60 * 1000);
+setInterval(() => {
+  runDailyReminderJobs().catch((e) =>
+    console.error("Kunlik eslatmalar:", e)
+  );
+}, STARS_REMINDER_INTERVAL_MS);
+
 // ======================
 // Jadval yaratish
 // ======================
@@ -1740,12 +1895,29 @@ pool.on('connect', () => {
       total_earnings INTEGER DEFAULT 0, 
       total_referrals INTEGER DEFAULT 0,
       subscribe_user BOOLEAN DEFAULT false,
+      get_stars_at TEXT DEFAULT NULL, -- (11/05/2026) yani bu userga eng so'ngi stars olingan sanasi
+      send_stars_message_at TEXT DEFAULT NULL, -- (11/05/2026) bu oxirgi message yuborilgan sana
+      get_premium_at TEXT DEFAULT NULL, -- (11/05/2026) yani o'ziga premium olgan sanasi
+      send_premium_message_at TEXT DEFAULT NULL, -- (11/05/2026) bu oxirgi message yuborilgan sana
+      last_premium_months INTEGER DEFAULT NULL, -- oxirgi sotib olingan premium davri (oylar)
       language VARCHAR(5) DEFAULT 'uz',
       created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'Asia/Tashkent')
     );
   `);
 
   console.log("✅ Table 'users' ready (yangi tuzilma)");
+})();
+(async () => {
+  try {
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS get_stars_at TEXT DEFAULT NULL`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS send_stars_message_at TEXT DEFAULT NULL`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS get_premium_at TEXT DEFAULT NULL`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS send_premium_message_at TEXT DEFAULT NULL`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_premium_months INTEGER DEFAULT NULL`);
+    console.log("✅ Table 'users' — qo'shimcha ustunlar tekshirildi (migration)");
+  } catch (err) {
+    console.error("⚠️ users migration:", err.message);
+  }
 })();
 (async () => {
   await pool.query(`
@@ -2874,6 +3046,46 @@ app.post("/api/admin/stars/send/:id", adminAuth, async (req, res) => {
   }
 });
 // ======================
+// 📅 Users: oxirgi stars / premium vaqti (recipient_username bo'yicha)
+// ======================
+function normalizeUsernameForUsersTable(raw) {
+  if (raw === undefined || raw === null) return "";
+  const s = String(raw).trim();
+  if (!s) return "";
+  return s.startsWith("@") ? s.slice(1) : s;
+}
+
+async function touchUserGetStarsAt(rawUsername) {
+  const clean = normalizeUsernameForUsersTable(rawUsername);
+  if (!clean) return;
+  try {
+    await pool.query(`UPDATE users SET get_stars_at = $1 WHERE username = $2`, [
+      new Date().toISOString(),
+      clean,
+    ]);
+  } catch (err) {
+    console.error("❌ touchUserGetStarsAt:", err.message);
+  }
+}
+
+async function touchUserGetPremiumAt(rawUsername, periodMonths) {
+  const clean = normalizeUsernameForUsersTable(rawUsername);
+  if (!clean) return;
+  let m = null;
+  if (periodMonths != null && Number.isFinite(Number(periodMonths))) {
+    m = Math.floor(Number(periodMonths));
+  }
+  try {
+    await pool.query(
+      `UPDATE users SET get_premium_at = $1, last_premium_months = $2 WHERE username = $3`,
+      [new Date().toISOString(), m, clean]
+    );
+  } catch (err) {
+    console.error("❌ touchUserGetPremiumAt:", err.message);
+  }
+}
+
+// ======================
 // 🔹 Yulduzlarni foydalanuvchiga yuborish - RobynHood API orqali --------------------------------REAL?TEST
 // ======================
 async function sendStarsToUser(order) {
@@ -2936,6 +3148,7 @@ async function sendStarsToUser(order) {
     removePriceFromCacheByOrderId(orderId);
     
     console.log(`✅ Stars yuborildi: ${orderId} -> ${txId}`);
+    touchUserGetStarsAt(order.recipient_username).catch(() => {});
     // 📢 Kanalga xabar
     sendUnifiedChannelNotification(order, 'stars').catch(err => console.error("Notification error:", err));
     return txId;
@@ -3591,6 +3804,18 @@ async function sendPremiumToUser(orderId, recipientId, months) {
         "UPDATE orders SET status='completed', transaction_id=$1 WHERE id=$2",
         [data.transaction_id, orderId]
       );
+      pool
+        .query(
+          "SELECT recipient_username, type_amount FROM orders WHERE id=$1",
+          [orderId]
+        )
+        .then((ord) => {
+          const row = ord.rows[0];
+          if (row?.recipient_username) {
+            touchUserGetPremiumAt(row.recipient_username, row.type_amount).catch(() => {});
+          }
+        })
+        .catch(() => {});
       
       // 🎯 Slotni bo'shatish
       releasePremiumPriceSlotByOrderId(orderId);
@@ -3822,6 +4047,8 @@ app.post("/api/admin/premium/manual", adminAuth, async (req, res) => {
     
     const order = result.rows[0];
     console.log(`👑 Manual Premium Order yaratildi: #${order.id} → @${cleanUsername} (${plan})`);
+
+    touchUserGetPremiumAt(cleanUsername, type_amount).catch(() => {});
 
     sendManualPremiumSoldChannelMessage(order, plan, req.adminUser).catch((e) =>
       console.error('❌ Manual premium kanal xabari:', e.message)
@@ -6500,6 +6727,8 @@ async function deliverStarsOrder(order) {
   
   console.log(`✅ Stars yuborildi: Order #${order.id} -> TxID: ${data.transaction_id}`);
   
+  touchUserGetStarsAt(order.recipient_username).catch(() => {});
+  
   // Referral bonus
   if (order.owner_user_id) {
     processReferralBonusByUserId(order.owner_user_id, order.type_amount, order.id)
@@ -6571,6 +6800,8 @@ async function deliverPremiumOrder(order) {
   removePriceFromCacheByOrderId(order.id);
   
   console.log(`✅ Premium yuborildi: Order #${order.id} -> TxID: ${data.transaction_id}`);
+  
+  touchUserGetPremiumAt(order.recipient_username, order.type_amount).catch(() => {});
   
   // Premium referral bonus
   if (order.owner_user_id) {
