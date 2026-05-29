@@ -46,7 +46,7 @@ import {
   getRobynStarsPrice,
   registerRobynhoodAdminRoutes,
 } from "./modules/robynhoodClient/index.js";
-import { getPaymeeBalance, paymeeConfigured } from "./modules/paymeeClient/index.js";
+import { getPaymeeWalletSummary, paymeeConfigured } from "./modules/paymeeClient/index.js";
 dotenv.config();
 const { Pool } = pkg;
 const app = express();
@@ -6316,14 +6316,10 @@ app.post("/api/admin/gift/send/:id", adminAuth, async (req, res) => {
 app.get("/api/admin/wallet-info", adminAuth, async (req, res) => {
   try {
     const paymeePromise = paymeeConfigured()
-      ? getPaymeeBalance().catch((e) => ({
-          success: false,
-          error: e.message,
-          status: e.status,
-        }))
-      : Promise.resolve(null);
+      ? getPaymeeWalletSummary()
+      : Promise.resolve({ configured: false });
 
-    const [balanceData, priceData, paymeeRaw] = await Promise.all([
+    const [balanceData, priceData, paymee] = await Promise.all([
       getRobynBalance(),
       getRobynStarsPrice(50),
       paymeePromise,
@@ -6332,27 +6328,13 @@ app.get("/api/admin/wallet-info", adminAuth, async (req, res) => {
     const mainnetBalance = parseFloat(balanceData.mainnet_balance) || 0;
     const testnetBalance = parseFloat(balanceData.testnet_balance) || 0;
     const priceFor50Stars = parseFloat(priceData.price) || 0;
-    const pricePerStar = priceFor50Stars / 50;
-    const availableStars = pricePerStar > 0 ? Math.floor(mainnetBalance / pricePerStar) : 0;
+    const robynPricePerStar = priceFor50Stars / 50;
 
-    let paymee = { configured: paymeeConfigured() };
-    if (paymee.configured && paymeeRaw) {
-      if (paymeeRaw.success === false && paymeeRaw.error) {
-        paymee = {
-          configured: true,
-          success: false,
-          error: paymeeRaw.error,
-          status: paymeeRaw.status,
-        };
-      } else {
-        paymee = {
-          configured: true,
-          success: paymeeRaw.success !== false,
-          balance_usdt: Number(paymeeRaw.balance_usdt),
-          currency: paymeeRaw.currency || "USDT",
-        };
-      }
-    }
+    // Mavjud stars — Paymee USDT ÷ usdt_per_star (docs: GET /balance + GET /pricing)
+    const availableStars =
+      paymee?.configured && paymee.success !== false
+        ? Number(paymee.available_stars) || 0
+        : 0;
 
     res.json({
       success: true,
@@ -6362,8 +6344,10 @@ app.get("/api/admin/wallet-info", adminAuth, async (req, res) => {
       },
       stars_price: {
         price_for_50: priceFor50Stars,
-        price_per_star: pricePerStar,
+        price_per_star: robynPricePerStar,
         currency: priceData.currency || "TON",
+        paymee_usdt_per_star: paymee?.usdt_per_star ?? null,
+        source: paymee?.configured ? "paymee" : "robyn",
       },
       available_stars: availableStars,
       paymee,

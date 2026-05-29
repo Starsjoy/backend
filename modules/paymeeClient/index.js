@@ -5,6 +5,8 @@ export {
   verifyPaymeeApiReachable,
   getPaymeeBalance,
   getPaymeePricing,
+  availableStarsFromPaymeeBalance,
+  getPaymeeWalletSummary,
   deliverStarsViaPaymeeApi,
   deliverPremiumViaPaymeeApi,
   isPartnerPurchaseSuccess,

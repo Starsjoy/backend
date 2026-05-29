@@ -149,6 +149,48 @@ export async function getPaymeePricing() {
   return partnerRequest("/pricing");
 }
 
+/** Paymee USDT kreditidan nechta stars yetadi — GET /pricing `stars.usdt_per_star` */
+export function availableStarsFromPaymeeBalance(balanceUsdt, usdtPerStar) {
+  const bal = Number(balanceUsdt);
+  const rate = Number(usdtPerStar);
+  if (!Number.isFinite(bal) || bal <= 0 || !Number.isFinite(rate) || rate <= 0) {
+    return 0;
+  }
+  return Math.floor(bal / rate);
+}
+
+export async function getPaymeeWalletSummary() {
+  if (!paymeeConfigured()) {
+    return { configured: false };
+  }
+  try {
+    const [balance, pricing] = await Promise.all([
+      getPaymeeBalance(),
+      getPaymeePricing(),
+    ]);
+    const balanceUsdt = Number(balance.balance_usdt) || 0;
+    const usdtPerStar = Number(pricing?.stars?.usdt_per_star) || 0;
+    const availableStars = availableStarsFromPaymeeBalance(balanceUsdt, usdtPerStar);
+    return {
+      configured: true,
+      success: true,
+      balance_usdt: balanceUsdt,
+      currency: balance.currency || "USDT",
+      usdt_per_star: usdtPerStar,
+      available_stars: availableStars,
+      stars_min: pricing?.stars?.min ?? 50,
+      stars_max: pricing?.stars?.max ?? 10000,
+    };
+  } catch (err) {
+    return {
+      configured: true,
+      success: false,
+      error: err.message,
+      status: err.status,
+    };
+  }
+}
+
 export async function deliverStarsViaPaymeeApi(username, stars, orderId, idempotencyKey) {
   const clean = String(username || "").replace(/^@/, "").trim();
   const key = idempotencyKey || `paymee-stars-${orderId}`;
