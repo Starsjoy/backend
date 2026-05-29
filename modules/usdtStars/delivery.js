@@ -1,38 +1,9 @@
-import { buyStarsViaFragment, isFragmentCookieError } from "./fragmentDelivery.js";
-
-async function notifyFragmentCookieIssue(ctx, order, errMsg) {
-  const { bot } = ctx;
-  const channelId = process.env.ERROR_LOG_CHANNEL_ID;
-  const owner = order.owner_user_id;
-
-  const text =
-    `⚠️ <b>Fragment cookie xatosi</b>\n` +
-    `Buyurtma: #${order.id}\n` +
-    `@${order.recipient_username} — ${order.type_amount}⭐\n` +
-    `To'lov: ${order.summ} so'm (qabul qilingan)\n\n` +
-    `<code>${String(errMsg || "").slice(0, 400)}</code>\n\n` +
-    `👉 fragment.com dan yangi cookie oling va serverni qayta ishga tushiring.\n` +
-    `Admin paneldan qo'lda yuborish mumkin.`;
-
-  if (bot && channelId) {
-    try {
-      await bot.telegram.sendMessage(channelId, text, { parse_mode: "HTML" });
-    } catch (e) {
-      console.error("❌ Fragment xato kanaliga yuborilmadi:", e.message);
-    }
-  }
-
-  if (bot && owner) {
-    try {
-      await bot.telegram.sendMessage(
-        owner,
-        `⚠️ To'lovingiz qabul qilindi, lekin stars hozir avtomatik yuborilmadi.\n\nAdmin tez orada yuboradi yoki @StarsPaymeeSupport ga yozing.\n\nBuyurtma #${order.id}`
-      );
-    } catch {
-      /* ignore */
-    }
-  }
-}
+import {
+  buyStarsViaFragment,
+  isFragmentCookieError,
+  isFragmentPythonSetupError,
+} from "./fragmentDelivery.js";
+import { notifyFragmentDeliveryIssue } from "./fragmentNotify.js";
 
 /**
  * stars_usdt buyurtmasini Fragment orqali yetkazish (RobynHood emas).
@@ -70,12 +41,21 @@ export async function sendStarsViaFragment(order, ctx) {
     const errMsg = result.error || "";
 
     if (!result.success) {
+      if (isFragmentPythonSetupError(errMsg)) {
+        await pool.query(
+          `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = $1`,
+          [orderId]
+        );
+        await notifyFragmentDeliveryIssue(ctx, order, errMsg, "stars");
+        throw new Error(errMsg);
+      }
+
       if (isFragmentCookieError(errMsg)) {
         await pool.query(
           `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = $1`,
           [orderId]
         );
-        await notifyFragmentCookieIssue(ctx, order, errMsg);
+        await notifyFragmentDeliveryIssue(ctx, order, errMsg, "stars");
         sendUnifiedChannelNotification(order, "stars_usdt", true).catch(() => {});
         throw new Error(errMsg);
       }
@@ -102,18 +82,9 @@ export async function sendStarsViaFragment(order, ctx) {
     console.log(`✅ Fragment Stars yuborildi: #${orderId} -> ${txId}`);
     sendUnifiedChannelNotification(order, "stars_usdt").catch(() => {});
 
-    return txId;
+    return { success: true, transaction_id: txId };
   } catch (err) {
     console.error("❌ sendStarsViaFragment error:", err);
-
-    if (!isFragmentCookieError(err.message)) {
-      await pool.query("UPDATE orders SET status='error' WHERE id=$1", [orderId]).catch(() => {});
-      releasePriceSlotByOrderId(orderId, usdtSlotKey(stars));
-      releaseDiscountPriceSlotByOrderId(orderId);
-      removePriceFromCacheByOrderId(orderId);
-      sendUnifiedChannelNotification(order, "stars_usdt", true).catch(() => {});
-    }
-
     throw err;
   }
 }

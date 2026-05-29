@@ -6,6 +6,8 @@ export {
   fragmentEnvReady,
   fragmentEnvReadyAsync,
   verifyFragmentCookies,
+  isFragmentPythonSetupError,
+  summarizeFragmentCliError,
   isFragmentCookieError,
 } from "./fragmentDelivery.js";
 export { usdtSlotKey } from "./orderCreate.js";

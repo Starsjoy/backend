@@ -9,9 +9,10 @@
     "start:sms": "node balanceChecker.js",
     "start:bot": "node token.js",
     "dev": "nodemon main.js",
-    "fragment:install": "npm install socks-proxy-agent && pip install -r requirements.txt",
+    "fragment:install": "npm install socks-proxy-agent && pip3 install -r requirements.txt",
+    "fragment:check-python": "node scripts/check-python-deps.js",
     "fragment:test-cookie": "node scripts/test-fragment-cookie.js",
-    "fragment:verify": "python modules/usdtStars/fragment_cli.py --verify-cookies"
+    "fragment:verify": "python3 modules/usdtStars/fragment_cli.py --verify-cookies"
   },
   "dependencies": {
     "cors": "^2.8.5",

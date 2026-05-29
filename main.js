@@ -4,7 +4,7 @@
  *   2. token.js       — Telegraf bot (buyruqlar, broadcast)
  *   3. balanceChecker.js — UZCARD SMS + match zanjiri (Robyn + USDT)
  */
-import { fork } from "child_process";
+import { fork, spawnSync } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import pg from "pg";
@@ -63,6 +63,22 @@ function validateEnv() {
 
   console.log("✅ .env asosiy kalitlar tekshirildi");
   console.log(`   PORT=${port} | USDT match: ${process.env.MATCH_API_STARS_USDT ? "bor" : "yo'q"}`);
+}
+
+function validatePythonFragmentDeps() {
+  const py = process.env.PYTHON_PATH || (process.platform === "win32" ? "python" : "python3");
+  const r = spawnSync(py, ["-c", "import dotenv"], {
+    cwd: __dirname,
+    encoding: "utf8",
+  });
+  if (r.status !== 0) {
+    console.error("❌ Python: dotenv moduli yo'q (Fragment stars/premium ishlamaydi)");
+    console.error("   cd backend && pip3 install -r requirements.txt");
+    console.error("   yoki: npm run fragment:install");
+    return false;
+  }
+  console.log("✅ Python dotenv tayyor (Fragment CLI)");
+  return true;
 }
 
 // =============================
@@ -146,6 +162,7 @@ process.on("SIGTERM", () => shutdownAll("SIGTERM"));
 // Ishga tushirish
 // =============================
 validateEnv();
+validatePythonFragmentDeps();
 await runCleanup();
 
 console.log("\n🔥 StarsJoy backend — parallel ishga tushmoqda\n");

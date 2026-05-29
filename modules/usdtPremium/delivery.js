@@ -1,38 +1,10 @@
-import { buyPremiumViaFragment, isFragmentCookieError } from "../usdtStars/fragmentDelivery.js";
+import {
+  buyPremiumViaFragment,
+  isFragmentCookieError,
+  isFragmentPythonSetupError,
+} from "../usdtStars/fragmentDelivery.js";
+import { notifyFragmentDeliveryIssue } from "../usdtStars/fragmentNotify.js";
 import { usdtPremiumSlotKey } from "./orderCreate.js";
-
-async function notifyFragmentCookieIssue(ctx, order, errMsg) {
-  const { bot } = ctx;
-  const channelId = process.env.ERROR_LOG_CHANNEL_ID;
-  const owner = order.owner_user_id;
-
-  const text =
-    `⚠️ <b>Fragment cookie xatosi (Premium)</b>\n` +
-    `Buyurtma: #${order.id}\n` +
-    `@${order.recipient_username} — ${order.type_amount} oy\n` +
-    `To'lov: ${order.summ} so'm (qabul qilingan)\n\n` +
-    `<code>${String(errMsg || "").slice(0, 400)}</code>\n\n` +
-    `👉 Admin panel → Sozlamalar → cookie yangilang.`;
-
-  if (bot && channelId) {
-    try {
-      await bot.telegram.sendMessage(channelId, text, { parse_mode: "HTML" });
-    } catch (e) {
-      console.error("❌ Fragment premium xato kanaliga yuborilmadi:", e.message);
-    }
-  }
-
-  if (bot && owner) {
-    try {
-      await bot.telegram.sendMessage(
-        owner,
-        `⚠️ To'lovingiz qabul qilindi, lekin premium hozir avtomatik yuborilmadi.\n\nAdmin tez orada yuboradi yoki @StarsPaymeeSupport ga yozing.\n\nBuyurtma #${order.id}`
-      );
-    } catch {
-      /* ignore */
-    }
-  }
-}
 
 /**
  * premium_usdt buyurtmasini Fragment orqali yetkazish.
@@ -70,12 +42,12 @@ export async function sendPremiumViaFragment(order, ctx) {
     const errMsg = result.error || "";
 
     if (!result.success) {
-      if (isFragmentCookieError(errMsg)) {
+      if (isFragmentPythonSetupError(errMsg) || isFragmentCookieError(errMsg)) {
         await pool.query(
           `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = $1`,
           [orderId]
         );
-        await notifyFragmentCookieIssue(ctx, order, errMsg);
+        await notifyFragmentDeliveryIssue(ctx, order, errMsg, "premium");
         sendUnifiedChannelNotification(order, "premium_usdt", true).catch(() => {});
         throw new Error(errMsg);
       }
@@ -112,7 +84,10 @@ export async function sendPremiumViaFragment(order, ctx) {
   } catch (err) {
     console.error("❌ sendPremiumViaFragment error:", err);
 
-    if (!isFragmentCookieError(err.message)) {
+    if (
+      !isFragmentCookieError(err.message) &&
+      !isFragmentPythonSetupError(err.message)
+    ) {
       await pool.query("UPDATE orders SET status='error' WHERE id=$1", [orderId]).catch(() => {});
       releasePriceSlotByOrderId(orderId, usdtPremiumSlotKey(months));
       releaseDiscountPriceSlotByOrderId(orderId);

@@ -41,13 +41,53 @@ function hasWalletEnv() {
 
 export function isFragmentCookieError(message) {
   const s = String(message || "").toLowerCase();
+  if (isFragmentPythonSetupError(message)) return false;
   return (
     s.includes("403") ||
     s.includes("cookie") ||
     s.includes("expired") ||
-    (s.includes("invalid") && s.includes("fragment")) ||
-    s.includes("tokens jadval")
+    s.includes("tokens jadval") ||
+    (s.includes("yaroqsiz") && s.includes("cookie")) ||
+    (s.includes("eskirgan") && s.includes("cookie"))
   );
+}
+
+export function isFragmentPythonSetupError(message) {
+  const s = String(message || "").toLowerCase();
+  return (
+    s.includes("modulenotfounderror") ||
+    s.includes("no module named") ||
+    s.includes("python ishga tushmadi") ||
+    s.includes("importerror") ||
+    s.includes("pip install")
+  );
+}
+
+/** CLI stderr/traceback dan qisqa xabar */
+export function summarizeFragmentCliError(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "Fragment CLI javob bermadi";
+
+  const modMatch = text.match(/No module named ['"]([^'"]+)['"]/i);
+  if (modMatch) {
+    const mod = modMatch[1];
+    return `Python moduli yo'q: ${mod}. VPS: cd backend && pip3 install -r requirements.txt`;
+  }
+
+  if (text.includes("ModuleNotFoundError")) {
+    return "Python kutubxonasi o'rnatilmagan. Ishga tushiring: pip3 install -r requirements.txt";
+  }
+
+  try {
+    const line = text.split("\n").filter(Boolean).pop() || "";
+    const parsed = JSON.parse(line);
+    if (parsed.error) return String(parsed.error);
+  } catch {
+    /* not json */
+  }
+
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines[lines.length - 1] || text.slice(0, 300);
 }
 
 function runFragmentCli(extraArgs = [], spawnEnv = process.env) {
@@ -83,7 +123,8 @@ function runFragmentCli(extraArgs = [], spawnEnv = process.env) {
       } catch {
         resolve({
           ok: false,
-          error: stderr || stdout || "Fragment CLI javob bermadi",
+          error: summarizeFragmentCliError(stderr || stdout),
+          raw_stderr: stderr.slice(0, 800),
         });
       }
     });
@@ -249,9 +290,10 @@ export async function buyStarsViaFragment(recipientUsername, amount, pool, opts 
 function parseFragmentCliResult(parsed) {
   if (parsed.success === true) return parsed;
   if (parsed.ok === true) return { success: true, transaction_id: parsed.transaction_id };
+  const raw = parsed.error || parsed.stderr || parsed.raw_stderr || "";
   return {
     success: false,
-    error: parsed.error || parsed.stderr || "Fragment xatosi",
+    error: summarizeFragmentCliError(raw) || "Fragment xatosi",
   };
 }
 
