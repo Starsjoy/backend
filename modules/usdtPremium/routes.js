@@ -9,8 +9,12 @@ export async function matchUsdtPremiumPayment(req, res, ctx) {
 
   try {
     const { amount } = req.body;
-    if (!amount) {
+    if (amount == null || amount === "") {
       return res.status(400).json({ error: "amount kerak" });
+    }
+    const matchAmount = parseInt(amount, 10);
+    if (!matchAmount || matchAmount <= 0) {
+      return res.status(400).json({ error: "amount noto'g'ri" });
     }
 
     const updated = await pool.query(
@@ -29,15 +33,24 @@ export async function matchUsdtPremiumPayment(req, res, ctx) {
          FOR UPDATE SKIP LOCKED
        )
        RETURNING *`,
-      [amount, ORDER_TYPE]
+      [matchAmount, ORDER_TYPE]
     );
 
     if (!updated.rows.length) {
+      console.log(`❌ USDT premium match topilmadi: amount=${matchAmount}`);
       return res.status(404).json({ message: "Pending USDT premium payment not found" });
     }
 
     const order = updated.rows[0];
-    console.log(`🎉 USDT Premium to'lov tasdiqlandi: #${order.id} | ${order.summ} so'm`);
+    console.log(
+      `🎉 USDT Premium to'lov tasdiqlandi: #${order.id} | ${order.summ} so'm → Fragment`
+    );
+
+    const payMethod =
+      typeof ctx.getFragmentPaymentMethod === "function"
+        ? ctx.getFragmentPaymentMethod()
+        : "ton";
+    console.log(`📤 Fragment premium yuborish: payment_method=${payMethod}`);
 
     sendPremiumViaFragment(order, ctx).catch((err) => {
       console.error("❌ Fragment premium delivery async error:", err.message);

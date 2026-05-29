@@ -282,6 +282,10 @@ export async function initBalanceClient() {
                     const result = await res.json();
                     console.log("🎉 Muvaffaqiyatli topildi:", result);
                 } else {
+                    const failBody = await res.text().catch(() => "");
+                    console.log(
+                        `⚠️ Match ${res.status} (${parsed.amount} so'm): ${failBody.slice(0, 300)}`
+                    );
                     console.log("⭐💎 Stars/Premium da topilmadi → GIFT urinyapti...");
                     res = await fetch(MATCH_API_GIFT, {
                         method: "POST",

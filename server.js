@@ -20,6 +20,7 @@ import {
 import {
   ensureTokensTable,
   seedFragmentTokensFromEnvIfEmpty,
+  syncFragmentTokensFromEnvIfMissing,
 } from "./modules/tokens/tokensDb.js";
 import {
   bootstrapSettings,
@@ -2960,6 +2961,11 @@ app.post("/api/payments/match", internalAuth, async (req, res) => {
     if (!card_last4 || !amount)
       return res.status(400).json({ error: "card_last4 va amount kerak" });
     // 🔐 ATOMIC UPDATE - orders jadvalidan
+    const matchAmount = parseInt(amount, 10);
+    if (!matchAmount || matchAmount <= 0) {
+      return res.status(400).json({ error: "amount noto'g'ri" });
+    }
+
     const updated = await pool.query(
       `UPDATE orders
        SET payment_status = 'paid',
@@ -2969,13 +2975,14 @@ app.post("/api/payments/match", internalAuth, async (req, res) => {
          WHERE summ = $1 
            AND payment_status = 'pending'
            AND status = 'pending'
+           AND order_type = 'stars'
            AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '15 minutes'
          ORDER BY id DESC 
          LIMIT 1
          FOR UPDATE SKIP LOCKED
        )
        RETURNING *`,
-      [amount]
+      [matchAmount]
     );
     if (!updated.rows.length)
       return res.status(404).json({ message: "Pending payment not found" });
@@ -7363,6 +7370,7 @@ registerSettingsRoutes(app, { pool, adminAuth });
 async function bootstrapAppData() {
   await ensureTokensTable(pool);
   await seedFragmentTokensFromEnvIfEmpty(pool);
+  await syncFragmentTokensFromEnvIfMissing(pool);
   await bootstrapSettings(pool);
 }
 

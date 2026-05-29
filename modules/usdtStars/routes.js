@@ -23,8 +23,12 @@ export async function matchUsdtStarsPayment(req, res, ctx) {
 
   try {
     const { card_last4, amount } = req.body;
-    if (!card_last4 || !amount) {
+    if (!card_last4 || amount == null || amount === "") {
       return res.status(400).json({ error: "card_last4 va amount kerak" });
+    }
+    const matchAmount = parseInt(amount, 10);
+    if (!matchAmount || matchAmount <= 0) {
+      return res.status(400).json({ error: "amount noto'g'ri" });
     }
 
     const updated = await pool.query(
@@ -43,15 +47,26 @@ export async function matchUsdtStarsPayment(req, res, ctx) {
          FOR UPDATE SKIP LOCKED
        )
        RETURNING *`,
-      [amount, ORDER_TYPE]
+      [matchAmount, ORDER_TYPE]
     );
 
     if (!updated.rows.length) {
+      console.log(
+        `❌ USDT stars match topilmadi: amount=${matchAmount} card=${card_last4}`
+      );
       return res.status(404).json({ message: "Pending USDT stars payment not found" });
     }
 
     const order = updated.rows[0];
-    console.log(`🎉 USDT Stars to'lov tasdiqlandi: #${order.id} | ${order.summ} so'm`);
+    console.log(
+      `🎉 USDT Stars to'lov tasdiqlandi: #${order.id} | ${order.summ} so'm → Fragment`
+    );
+
+    const payMethod =
+      typeof ctx.getFragmentPaymentMethod === "function"
+        ? ctx.getFragmentPaymentMethod()
+        : "ton";
+    console.log(`📤 Fragment stars yuborish: payment_method=${payMethod}`);
 
     sendStarsViaFragment(order, ctx).catch((err) => {
       console.error("❌ Fragment delivery async error:", err.message);

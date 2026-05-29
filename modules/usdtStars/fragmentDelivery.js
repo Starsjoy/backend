@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import os from "os";
 import {
   getFragmentTokens,
+  resolveFragmentTokens,
   fragmentTokensReady,
   fragmentTokenFingerprint,
   fragmentTokensToProcessEnv,
@@ -220,16 +221,24 @@ export async function buyStarsViaFragment(recipientUsername, amount, pool, opts 
     return { success: false, error: "SEED va API_KEY .env da kerak" };
   }
 
-  const tokens = await getFragmentTokens(pool);
+  const { tokens, source: tokenSource } = await resolveFragmentTokens(pool, "auto");
   if (!fragmentTokensReady(tokens)) {
     return {
       success: false,
-      error: "tokens jadvalida fragment_ssid va fragment_token to'ldiring",
+      error:
+        "Fragment cookie yo'q: .env (FRAGMENT_SSID/TOKEN) yoki tokens jadvalini to'ldiring",
     };
   }
 
   const paymentMethod = await resolveFragmentPaymentMethod(pool, opts.getFragmentPaymentMethod);
   const env = fragmentTokensToProcessEnv(process.env, tokens, paymentMethod);
+
+  console.log("🔹 buyStarsViaFragment:", {
+    recipient,
+    stars,
+    payment_method: paymentMethod,
+    token_source: tokenSource,
+  });
 
   return runFragmentCli(
     ["--recipient", recipient, "--amount", String(stars), "--payment-method", paymentMethod],
@@ -262,16 +271,24 @@ export async function buyPremiumViaFragment(recipientUsername, months, pool, opt
     return { success: false, error: "SEED va API_KEY .env da kerak" };
   }
 
-  const tokens = await getFragmentTokens(pool);
+  const { tokens, source: tokenSource } = await resolveFragmentTokens(pool, "auto");
   if (!fragmentTokensReady(tokens)) {
     return {
       success: false,
-      error: "tokens jadvalida fragment_ssid va fragment_token to'ldiring",
+      error:
+        "Fragment cookie yo'q: .env (FRAGMENT_SSID/TOKEN) yoki tokens jadvalini to'ldiring",
     };
   }
 
   const paymentMethod = await resolveFragmentPaymentMethod(pool, opts.getFragmentPaymentMethod);
   const env = fragmentTokensToProcessEnv(process.env, tokens, paymentMethod);
+
+  console.log("🔹 buyPremiumViaFragment:", {
+    recipient,
+    months: m,
+    payment_method: paymentMethod,
+    token_source: tokenSource,
+  });
 
   return runFragmentCli(
     [

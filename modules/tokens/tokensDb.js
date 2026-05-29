@@ -1,6 +1,7 @@
+import { normalizeFragmentPaymentMethod } from "../settings/settingsDb.js";
+
 /** Fragment cookie kalitlari — `tokens` jadvalida saqlanadi */
-export const FRAGMENT_TOKEN_KEYS = [
-  "fragment_dt",
+export const FRAGMENT_TOKEN_KEYS = [  "fragment_dt",
   "fragment_ssid",
   "fragment_token",
   "fragment_ton_token",
@@ -167,9 +168,25 @@ export function fragmentTokenFingerprint(tokens) {
 /**
  * Jadval bo'sh bo'lsa .env dan bir martalik seed (migratsiya).
  */
+/** DB da fragment cookie bo'sh, .env da to'liq bo'lsa — DB ga yozish (yetkazish uchun). */
+export async function syncFragmentTokensFromEnvIfMissing(pool) {
+  const db = await getFragmentTokens(pool);
+  if (fragmentTokensReady(db)) return false;
+
+  const env = getFragmentTokensFromEnv();
+  if (!fragmentTokensReady(env)) return false;
+
+  await setFragmentTokens(pool, env);
+  console.log("📦 Fragment cookie .env dan tokens jadvaliga nusxalandi");
+  return true;
+}
+
 export async function seedFragmentTokensFromEnvIfEmpty(pool) {
   const countRes = await pool.query("SELECT COUNT(*)::int AS c FROM tokens");
-  if (countRes.rows[0].c > 0) return false;
+  if (countRes.rows[0].c > 0) {
+    await syncFragmentTokensFromEnvIfMissing(pool);
+    return false;
+  }
 
   const envMap = {
     fragment_dt: process.env.FRAGMENT_DT || process.env.STEL_DT || DEFAULTS.fragment_dt,
