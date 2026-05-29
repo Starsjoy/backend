@@ -12,6 +12,33 @@ export function paymeeConfigured() {
   return Boolean(getBaseUrl() && getApiKey());
 }
 
+function looksLikeHtml(text) {
+  const t = String(text || "").trim().toLowerCase();
+  return t.startsWith("<!doctype") || t.startsWith("<html") || t.includes("<head>");
+}
+
+function parsePartnerJson(rawText) {
+  const raw = String(rawText || "").trim();
+  if (!raw) return {};
+  if (looksLikeHtml(raw)) {
+    const err = new Error(
+      "Partner API HTML qaytardi (frontend sahifa). STARS_PAYMEE_API_URL provider backend bo'lishi kerak — " +
+        "masalan https://PROVIDER_HOST/api/purchase/v1 (starstg.uz faqat misol, nginx proxy kerak)."
+    );
+    err.status = 502;
+    err.body = { _html: true, _raw: raw.slice(0, 200) };
+    throw err;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const err = new Error(`Partner API JSON emas: ${raw.slice(0, 120)}`);
+    err.status = 502;
+    err.body = { _raw: raw.slice(0, 300) };
+    throw err;
+  }
+}
+
 /**
  * StarsPaymee Partner API (docs.md §4)
  */
@@ -36,12 +63,7 @@ export async function partnerRequest(path, options = {}) {
   });
 
   const rawText = await res.text();
-  let data = {};
-  try {
-    data = rawText ? JSON.parse(rawText) : {};
-  } catch {
-    data = { _raw: rawText?.slice(0, 300) };
-  }
+  const data = parsePartnerJson(rawText);
 
   if (!res.ok) {
     const err = new Error(
@@ -85,6 +107,27 @@ export function shouldRetryPaymeePurchase(err) {
 
 export async function checkPaymeeHealth() {
   return partnerRequest("/health");
+}
+
+/** Ishga tushishda: URL haqiqatan Partner API ekanini tekshiradi */
+export async function verifyPaymeeApiReachable() {
+  if (!paymeeConfigured()) {
+    return { ok: false, error: "STARS_PAYMEE_API_URL yoki API_KEY yo'q" };
+  }
+  const base = getBaseUrl();
+  try {
+    const health = await checkPaymeeHealth();
+    if (health?.success !== true) {
+      return {
+        ok: false,
+        error: `Health javob noto'g'ri: ${JSON.stringify(health).slice(0, 200)}`,
+        url: base,
+      };
+    }
+    return { ok: true, url: base, fragment_ready: health.fragment_ready };
+  } catch (err) {
+    return { ok: false, error: err.message, url: base, body: err.body };
+  }
 }
 
 export async function getPaymeeBalance() {

@@ -2,6 +2,7 @@ export {
   paymeeConfigured,
   partnerRequest,
   checkPaymeeHealth,
+  verifyPaymeeApiReachable,
   getPaymeeBalance,
   deliverStarsViaPaymeeApi,
   deliverPremiumViaPaymeeApi,

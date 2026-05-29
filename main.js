@@ -68,7 +68,22 @@ function validateEnv() {
         "⚠️ MATCH_API_STARS_PAYMEE bor, lekin STARS_PAYMEE_API_URL / STARS_PAYMEE_API_KEY yo'q — yetkazish ishlamaydi"
       );
     } else {
-      console.log("✅ Paymee Partner API .env sozlangan");
+      console.log(`✅ Paymee .env: ${process.env.STARS_PAYMEE_API_URL}`);
+      import("./modules/paymeeClient/index.js")
+        .then(({ verifyPaymeeApiReachable }) => verifyPaymeeApiReachable())
+        .then((r) => {
+          if (r.ok) {
+            console.log(
+              `✅ Partner API ulanish OK (${r.url}) fragment_ready=${r.fragment_ready}`
+            );
+          } else {
+            console.error(`❌ Partner API ulanish XATO (${r.url}): ${r.error}`);
+            console.error(
+              "   starstg.uz ko‘pincha faqat frontend — provider backend URL + nginx /api/purchase/ proxy kerak"
+            );
+          }
+        })
+        .catch((e) => console.error("❌ Partner API tekshiruv:", e.message));
     }
   }
 
