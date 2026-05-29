@@ -37,6 +37,7 @@ import {
   getCachedSettings,
   registerSettingsRoutes,
 } from "./modules/settings/index.js";
+import { upsertUserFromTelegram } from "./modules/users/upsertUser.js";
 dotenv.config();
 const { Pool } = pkg;
 const app = express();
@@ -4605,101 +4606,68 @@ app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) =
     if (!tgUserId) {
       return res.status(400).json({ error: "Telegram user_id kerak" });
     }
-    // User mavjudligini tekshirish (user_id orqali)
-    let user = await pool.query(
-      "SELECT * FROM users WHERE user_id = $1",
-      [tgUserId]
-    );
-    if (user.rows.length === 0) {
-      // Yangi user
+    if (referral_code) {
+      const referrer = await pool.query(
+        "SELECT user_id FROM users WHERE referral_code = $1",
+        [referral_code]
+      );
+      if (referrer.rows.length === 0) {
+        return res.status(400).json({ error: "Referral code noto'g'ri" });
+      }
+    }
+
+    const { created, username: savedUsername } = await upsertUserFromTelegram(pool, {
+      userId: tgUserId,
+      fullName: tgName,
+      username: tgUsername,
+      language: language || "uz",
+    });
+
+    const user = await pool.query("SELECT * FROM users WHERE user_id = $1", [tgUserId]);
+
+    if (created) {
+      console.log(
+        `👤 Yangi user ro'yxatdan o'tdi: ${savedUsername} (user_id: ${tgUserId})`
+      );
+
       let referrer_user_id = null;
-      // Referral code mavjudligini tekshirish
       if (referral_code) {
         const referrer = await pool.query(
           "SELECT user_id FROM users WHERE referral_code = $1",
           [referral_code]
         );
-        if (referrer.rows.length === 0) {
-          return res.status(400).json({ error: "Referral code noto'g'ri" });
-        }
-        referrer_user_id = referrer.rows[0].user_id;
+        referrer_user_id = referrer.rows[0]?.user_id || null;
       }
-      // Yangi referral code generate qilish
-      const new_code = crypto.randomBytes(6).toString("hex");
-      // Yangi user qo'shish
-      const newUser = await pool.query(
-        `INSERT INTO users (name, username, user_id, referral_code, referrer_user_id, language)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING *`,
-        [tgName, tgUsername, tgUserId, new_code, null, language || 'uz']
-      );
-      console.log(
-        `👤 Yangi user ro'yxatdan o'tdi: ${tgUsername} (name: ${tgName}, user_id: ${tgUserId}, referrer_user_id: ${referrer_user_id || "yo'q"}, language: ${language || 'uz'})`
-      );
-      
-      // ⚠️ NOTE: referrer_user_id is NOT SET here! Will be set only after admin approval via referral_requests
-      console.log(`ℹ️ Referrer user_id set bo'lmadi - admin approval-ni kutilmoqda (referral_requests via)`);
-      
-      // 📝 Agar referrer mavjud bo'lsa - AUTOMATICALLY referral_request yaratiш
+
       if (referrer_user_id) {
         try {
           const referrerResult = await pool.query(
             "SELECT username FROM users WHERE user_id = $1",
             [referrer_user_id]
           );
-          
+
           if (referrerResult.rows.length > 0) {
             const referrerUsername = referrerResult.rows[0].username;
-            const is_subscribed = false; // New user har doim subscribe bo'lmagan
-            
             await pool.query(
               `INSERT INTO referral_requests 
                (owner_user_id, owner_username, referrer_user_id, referrer_username, subscribe_referrer) 
                VALUES ($1, $2, $3, $4, $5)`,
-              [tgUserId, tgUsername, referrer_user_id, referrerUsername, is_subscribed]
+              [tgUserId, savedUsername, referrer_user_id, referrerUsername, false]
             );
-            
-            console.log(`📝 Referral request AUTO-created: ${tgUsername} -> ${referrerUsername}`);
+            console.log(
+              `📝 Referral request AUTO-created: ${savedUsername} -> ${referrerUsername}`
+            );
           }
         } catch (err) {
           console.error("❌ Auto-create referral request error:", err.message);
         }
       }
-      
-      // 🎉 Yangi foydalanuvchiga xush kelibsiz xabari yuborish
-      sendWelcomeMessage(tgUserId, tgName || tgUsername).catch(err => {
+
+      sendWelcomeMessage(tgUserId, tgName || savedUsername).catch((err) => {
         console.error("❌ Welcome message error:", err.message);
       });
-      
-      return res.json(newUser.rows[0]);
     }
-    // User allaqachon mavjud — name va username ni yangilash (agar o'zgargan bo'lsa)
-    const existingUser = user.rows[0];
-    let needsUpdate = false;
-    const updateFields = [];
-    const updateValues = [];
-    let paramIndex = 1;
-    if (tgName && existingUser.name !== tgName) {
-      updateFields.push(`name = $${paramIndex++}`);
-      updateValues.push(tgName);
-      needsUpdate = true;
-    }
-    if (tgUsername && existingUser.username !== tgUsername) {
-      updateFields.push(`username = $${paramIndex++}`);
-      updateValues.push(tgUsername);
-      needsUpdate = true;
-    }
-    if (needsUpdate) {
-      updateValues.push(tgUserId);
-      await pool.query(
-        `UPDATE users SET ${updateFields.join(', ')} WHERE user_id = $${paramIndex}`,
-        updateValues
-      );
-      console.log(`🔄 ${tgUserId} ma'lumotlari yangilandi`);
-      
-      // Yangilangan ma'lumotlarni qaytarish
-      user = await pool.query("SELECT * FROM users WHERE user_id = $1", [tgUserId]);
-    }
+
     res.json(user.rows[0]);
   } catch (err) {
     console.error("❌ /api/referral/register ERROR:", err);

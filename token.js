@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Telegraf, Markup } from 'telegraf';
 import pg from 'pg';
-import crypto from 'crypto';
+import { upsertUserFromTelegram } from './modules/users/upsertUser.js';
 const { Pool } = pg;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -124,24 +124,19 @@ bot.start(async (ctx) => {
   const language = ctx.from.language_code || 'uz';
 
   try {
-    const userCheck = await pool.query('SELECT user_id FROM users WHERE user_id = $1', [String(userId)]);
-    if (userCheck.rows.length === 0) {
-      const new_code = crypto.randomBytes(6).toString("hex");
-      await pool.query(
-        `INSERT INTO users (name, username, user_id, referral_code, referrer_user_id, language)
-         VALUES ($1, $2, $3, $4, null, $5)`,
-        [fullName, username, String(userId), new_code, language]
-      );
-      console.log(`👤 Bot orqali yangi user ro'yxatdan o'tdi: ${userId} (${username || fullName})`);
-    } else {
-      // Mavjud foydalanuvchining ma'lumotlarini yangilab qo'yamiz (agar o'zgargan bo'lsa)
-      await pool.query(
-        `UPDATE users SET name = $1, username = $2 WHERE user_id = $3`,
-        [fullName, username, String(userId)]
+    const { created, username: savedUsername } = await upsertUserFromTelegram(pool, {
+      userId,
+      fullName,
+      username,
+      language,
+    });
+    if (created) {
+      console.log(
+        `👤 Bot orqali yangi user ro'yxatdan o'tdi: ${userId} (${savedUsername || fullName})`
       );
     }
   } catch (err) {
-    console.error("❌ Userni DB ga yozishda xato:", err);
+    console.error("❌ Userni DB ga yozishda xato:", err.message || err);
   }
 
   // ADMIN — obuna talab qilinmaydi
