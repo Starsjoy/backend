@@ -62,6 +62,24 @@ function validateEnv() {
     }
   }
 
+  if (process.env.ROB_API_KEY?.trim()) {
+    console.log(
+      `✅ RobynHood .env: ${process.env.ROBYNHOOD_API_URL || "https://robynhood.parssms.info"}`
+    );
+    import("./modules/robynhoodClient/index.js")
+      .then(({ verifyRobynhoodApiReachable }) => verifyRobynhoodApiReachable())
+      .then((r) => {
+        if (r.ok) {
+          console.log(`✅ RobynHood API ulanish OK (${r.url})`);
+        } else {
+          console.error(`❌ RobynHood API ulanish XATO: ${r.error}`);
+        }
+      })
+      .catch((e) => console.error("❌ RobynHood tekshiruv:", e.message));
+  } else {
+    console.warn("⚠️ ROB_API_KEY yo'q — /stars va /premium (RobynHood) yetkazish ishlamaydi");
+  }
+
   if (process.env.MATCH_API_STARS_PAYMEE?.trim()) {
     if (!process.env.STARS_PAYMEE_API_URL?.trim() || !process.env.STARS_PAYMEE_API_KEY?.trim()) {
       console.warn(

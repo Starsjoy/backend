@@ -38,6 +38,14 @@ import {
   registerSettingsRoutes,
 } from "./modules/settings/index.js";
 import { upsertUserFromTelegram } from "./modules/users/upsertUser.js";
+import {
+  purchaseRobynStars,
+  purchaseRobynPremium,
+  purchaseRobynGift,
+  getRobynBalance,
+  getRobynStarsPrice,
+  registerRobynhoodAdminRoutes,
+} from "./modules/robynhoodClient/index.js";
 dotenv.config();
 const { Pool } = pkg;
 const app = express();
@@ -3212,30 +3220,7 @@ async function sendStarsToUser(order) {
   const { id: orderId, recipient: recipientId, type_amount: stars } = order;
   try {
     console.log("🔹 sendStarsToUser:", { orderId, recipientId, stars });
-    const idempotencyKey = crypto.randomUUID();
-    const purchaseBody = {
-      product_type: "stars",
-      recipient: recipientId,        
-      quantity: String(stars),
-      idempotency_key: idempotencyKey,
-    };
-    const purchaseRes = await fetch("https://robynhood.parssms.info/api/purchase", {  // real
-    //const purchaseRes = await fetch("https://robynhood.parssms.info/api/test/purchase", { // test
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "accept": "application/json",
-        "X-API-Key": process.env.ROB_API_KEY,
-      },
-      body: JSON.stringify(purchaseBody),
-    });
-    const text = await purchaseRes.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch (err) {
-      throw new Error("Purchase API noto'g'ri format qaytardi: " + text);
-    }
+    const data = await purchaseRobynStars(orderId, recipientId, stars);
     console.log("📦 Purchase javob:", data);
     if (!data.transaction_id) {
       await pool.query(
@@ -3891,36 +3876,20 @@ async function sendPremiumToUser(orderId, recipientId, months) {
       return { status: "error", reason: "order_not_found" };
     if (check.rows[0].status === "completed")
       return { status: "completed", reason: "already_sent" };
-    const idempotencyKey = crypto.randomUUID();
-    console.log("🧬 Idempotency Key:", idempotencyKey);
-    const body = {
-      product_type: "premium",
-      recipient: recipientId,
-      months: String(months),
-      idempotency_key: idempotencyKey
-    };
-    console.log("🌐 Providerga so‘rov yuborilmoqda:", body);
-    const resp = await fetch("https://robynhood.parssms.info/api/purchase", {   // real
-    //const resp = await fetch("https://robynhood.parssms.info/api/test/purchase", {    //test
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": process.env.ROB_API_KEY,
-        accept: "application/json",
-      },
-      body: JSON.stringify(body)
-    });
-    const text = await resp.text();
-    console.log("📦 Provider RAW:", text);
+    console.log("🌐 RobynHood premium:", { orderId, recipientId, months });
     let data;
-    try { data = JSON.parse(text); }
-    catch {
-      console.log("❌ JSON parse xato!");
+    try {
+      data = await purchaseRobynPremium(orderId, recipientId, months);
+    } catch (apiErr) {
+      console.log("❌ Robyn premium API:", apiErr.message);
       await pool.query(
         "UPDATE orders SET status='failed' WHERE id=$1",
         [orderId]
       );
-      return { status: "failed", reason: "invalid_api_response" };
+      return {
+        status: "failed",
+        reason: apiErr.body?.error || apiErr.message || "api_error",
+      };
     }
     console.log("📡 Provider JSON:", data);
     if (data.transaction_id) {
@@ -6343,25 +6312,10 @@ app.post("/api/admin/gift/send/:id", adminAuth, async (req, res) => {
 // ======================
 // 📊 ADMIN — Wallet Info (TON Balance & Stars Price)
 // ======================
-const ROBYNHOOD_API_KEY = process.env.ROB_API_KEY;
 app.get("/api/admin/wallet-info", adminAuth, async (req, res) => {
   try {
-    // Fetch TON balance
-    const balanceRes = await fetch("https://robynhood.parssms.info/api/balance", {
-      headers: {
-        "accept": "application/json",
-        "X-API-Key": ROBYNHOOD_API_KEY
-      }
-    });
-    const balanceData = await balanceRes.json();
-    // Fetch stars price (50 stars as reference)
-    const priceRes = await fetch("https://robynhood.parssms.info/api/prices?product_type=stars&quantity=50", {
-      headers: {
-        "accept": "application/json",
-        "X-API-Key": ROBYNHOOD_API_KEY
-      }
-    });
-    const priceData = await priceRes.json();
+    const balanceData = await getRobynBalance();
+    const priceData = await getRobynStarsPrice(50);
     // Calculate available stars
     const mainnetBalance = parseFloat(balanceData.mainnet_balance) || 0;
     const testnetBalance = parseFloat(balanceData.testnet_balance) || 0;
@@ -6797,33 +6751,13 @@ app.post("/api/v2/payments/match", internalAuth, async (req, res) => {
 // 🌟 Stars yetkazish funksiyasi
 async function deliverStarsOrder(order) {
   console.log(`🌟 Stars yetkazilmoqda: Order #${order.id}`);
-  
-  const idempotencyKey = crypto.randomUUID();
-  
-  const purchaseRes = await fetch("https://robynhood.parssms.info/api/purchase", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "accept": "application/json",
-      "X-API-Key": process.env.ROB_API_KEY,
-    },
-    body: JSON.stringify({
-      product_type: "stars",
-      recipient: order.recipient,
-      quantity: String(order.type_amount),
-      idempotency_key: idempotencyKey,
-    }),
-  });
-  
-  const text = await purchaseRes.text();
-  let data;
-  
-  try {
-    data = JSON.parse(text);
-  } catch (err) {
-    throw new Error("Stars API noto'g'ri format qaytardi: " + text);
-  }
-  
+
+  const data = await purchaseRobynStars(
+    order.id,
+    order.recipient,
+    order.type_amount
+  );
+
   console.log("📦 Stars API javob:", data);
   
   if (!data.transaction_id) {
@@ -6873,33 +6807,13 @@ async function deliverStarsOrder(order) {
 // 👑 Premium yetkazish funksiyasi
 async function deliverPremiumOrder(order) {
   console.log(`👑 Premium yetkazilmoqda: Order #${order.id}`);
-  
-  const idempotencyKey = crypto.randomUUID();
-  
-  const purchaseRes = await fetch("https://robynhood.parssms.info/api/purchase", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "accept": "application/json",
-      "X-API-Key": process.env.ROB_API_KEY,
-    },
-    body: JSON.stringify({
-      product_type: "premium",
-      recipient: order.recipient,
-      months: String(order.type_amount),
-      idempotency_key: idempotencyKey,
-    }),
-  });
-  
-  const text = await purchaseRes.text();
-  let data;
-  
-  try {
-    data = JSON.parse(text);
-  } catch (err) {
-    throw new Error("Premium API noto'g'ri format qaytardi: " + text);
-  }
-  
+
+  const data = await purchaseRobynPremium(
+    order.id,
+    order.recipient,
+    order.type_amount
+  );
+
   console.log("📦 Premium API javob:", data);
   
   if (!data.transaction_id) {
@@ -6947,34 +6861,14 @@ async function deliverPremiumOrder(order) {
 // 🎁 Gift yetkazish funksiyasi
 async function deliverGiftOrder(order) {
   console.log(`🎁 Gift yetkazilmoqda: Order #${order.id}`);
-  
-  const idempotencyKey = crypto.randomUUID();
-  
-  const purchaseRes = await fetch("https://robynhood.parssms.info/api/purchase", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "accept": "application/json",
-      "X-API-Key": process.env.ROB_API_KEY,
-    },
-    body: JSON.stringify({
-      product_type: "gift",
-      recipient: order.recipient,
-      gift_id: order.gift_id,
-      quantity: String(order.type_amount),
-      idempotency_key: idempotencyKey,
-    }),
-  });
-  
-  const text = await purchaseRes.text();
-  let data;
-  
-  try {
-    data = JSON.parse(text);
-  } catch (err) {
-    throw new Error("Gift API noto'g'ri format qaytardi: " + text);
-  }
-  
+
+  const data = await purchaseRobynGift(
+    order.id,
+    order.recipient,
+    order.gift_id,
+    order.type_amount
+  );
+
   console.log("📦 Gift API javob:", data);
   
   if (!data.transaction_id) {
@@ -7460,6 +7354,7 @@ const paymeePremiumCtx = {
 
 registerPaymeeStarsRoutes(app, paymeeStarsCtx);
 registerPaymeePremiumRoutes(app, paymeePremiumCtx);
+registerRobynhoodAdminRoutes(app, { pool, adminAuth });
 
 registerSettingsRoutes(app, { pool, adminAuth });
 
