@@ -4,6 +4,7 @@
  * HTTP: http://user:pass@host:port
  */
 import nodeFetch from "node-fetch";
+import { SocksProxyAgent } from "socks-proxy-agent";
 
 /** socks5 → socks5h: DNS ham proxy (Tor) orqali */
 export function normalizeFragmentProxyUrl(proxy) {
@@ -46,11 +47,16 @@ export async function fragmentFetch(url, init = {}) {
   }
 
   if (isSocksProxyUrl(proxy)) {
-    const { SocksProxyAgent } = await import("socks-proxy-agent");
     const agent = new SocksProxyAgent(proxy);
     return nodeFetch(url, { ...init, agent });
   }
 
-  const { ProxyAgent } = await import("undici");
-  return globalThis.fetch(url, { ...init, dispatcher: new ProxyAgent(proxy) });
+  try {
+    const { ProxyAgent } = await import("undici");
+    return globalThis.fetch(url, { ...init, dispatcher: new ProxyAgent(proxy) });
+  } catch {
+    throw new Error(
+      "HTTP proxy uchun `undici` kerak yoki Tor uchun FRAGMENT_HTTP_PROXY=socks5://127.0.0.1:9050 ishlating"
+    );
+  }
 }
