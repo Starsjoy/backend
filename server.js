@@ -46,7 +46,15 @@ import {
   getRobynStarsPrice,
   registerRobynhoodAdminRoutes,
 } from "./modules/robynhoodClient/index.js";
-import { getPaymeeWalletSummary, paymeeConfigured } from "./modules/paymeeClient/index.js";
+import {
+  getPaymeeWalletSummary,
+  paymeeConfigured,
+  startPaymeeBalanceMonitor,
+} from "./modules/paymeeClient/index.js";
+import {
+  PROMO_USER_USAGE_SQL,
+  releasePromocodeUsage,
+} from "./modules/promocodes/helpers.js";
 dotenv.config();
 const { Pool } = pkg;
 const app = express();
@@ -358,7 +366,7 @@ async function loadPendingOrdersToCache() {
       WHERE status = 'pending' 
         AND payment_status = 'pending'
         AND created_at < (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '8 minutes'
-      RETURNING id, owner_user_id, order_type
+      RETURNING id, owner_user_id, order_type, applied_promocode
     `);
     
     if (expireResult.rows.length > 0) {
@@ -371,6 +379,9 @@ async function loadPendingOrdersToCache() {
         releaseDiscountPriceSlotByOrderId(row.id);
         releasePremiumPriceSlotByOrderId(row.id);
         releaseGiftPriceSlotByOrderId(row.id);
+        if (row.applied_promocode) {
+          await releasePromocodeUsage(pool, row.applied_promocode);
+        }
         
         // Xabar yuborish (faqat 1 marta)
         if (['stars', 'gift', 'premium'].includes(row.order_type) && row.owner_user_id && bot) {
@@ -514,10 +525,7 @@ setInterval(async () => {
         releaseGiftPriceSlotByOrderId(row.id);
 
         if (row.applied_promocode) {
-          await pool.query(
-            `UPDATE promocodes SET used_count = GREATEST(used_count - 1, 0) WHERE code = $1`,
-            [row.applied_promocode]
-          );
+          await releasePromocodeUsage(pool, row.applied_promocode);
         }
 
         // Order expired bo'lsa, foydalanuvchiga xabar yuborish (faqat 1 marta)
@@ -2524,10 +2532,7 @@ app.post("/api/promocode/check", telegramAuth, async (req, res) => {
 
     // Foydalanuvchi oldin ishlatganligini tekshirish (1 marta ruxsat berish)
     if (userId) {
-      const userUsage = await pool.query(
-        `SELECT id FROM orders WHERE owner_user_id = $1 AND applied_promocode = $2 AND status IN ('success', 'pending', 'processing') LIMIT 1`,
-        [userId, code]
-      );
+      const userUsage = await pool.query(PROMO_USER_USAGE_SQL, [userId, code]);
       if (userUsage.rows.length > 0) {
         return res.status(400).json({ error: "Siz ushbu promokoddan foydalangansiz yoki faol to'lovingiz bor" });
       }
@@ -2779,10 +2784,10 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
               if (promo.target_amount === null || promo.target_amount === starsNum) {
                 
                 // Foydalanuvchi avval ushbu koddan foydalanganmi?
-                const userUsage = await client.query(
-                  `SELECT id FROM orders WHERE owner_user_id = $1 AND applied_promocode = $2 AND status IN ('success', 'pending', 'processing') LIMIT 1`,
-                  [ownerUserId, applied_promocode]
-                );
+                const userUsage = await client.query(PROMO_USER_USAGE_SQL, [
+                  ownerUserId,
+                  applied_promocode,
+                ]);
 
                 if (userUsage.rows.length === 0) {
                   // Yaroqli! Apply discount
@@ -3121,6 +3126,21 @@ app.post("/api/admin/stars/send/:id", adminAuth, async (req, res) => {
     const order = q.rows[0];
     if (order.status === "completed")
       return res.status(400).json({ error: "Yulduzlar allaqachon yuborilgan" });
+
+    if (
+      order.status === "expired" ||
+      order.payment_status === "expired" ||
+      order.status === "failed" ||
+      order.status === "error" ||
+      order.status === "pending"
+    ) {
+      await pool.query(
+        `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = $1`,
+        [id]
+      );
+      order.status = "processing";
+      order.payment_status = "paid";
+    }
 
     if (order.order_type === "stars_usdt") {
       const tx = await sendStarsViaFragment(order, {
@@ -3654,10 +3674,10 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
             if (promo.target_type === 'all' || promo.target_type === 'premium') {
               if (promo.target_amount === null || promo.target_amount === months) {
 
-                const userUsage = await client.query(
-                  `SELECT id FROM orders WHERE owner_user_id = $1 AND applied_promocode = $2 AND status IN ('success', 'pending', 'processing') LIMIT 1`,
-                  [ownerUserId, applied_promocode]
-                );
+                const userUsage = await client.query(PROMO_USER_USAGE_SQL, [
+                  ownerUserId,
+                  applied_promocode,
+                ]);
 
                 if (userUsage.rows.length === 0) {
                   finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
@@ -4100,6 +4120,25 @@ app.post("/api/admin/premium/resend/:id", adminAuth, async (req, res) => {
     if (!orderResult.rows.length)
       return res.status(404).json({ error: "Order topilmadi" });
     const order = orderResult.rows[0];
+
+    if (order.status === "completed" || order.status === "delivered" || order.status === "premium_sent") {
+      return res.status(400).json({ error: "Premium allaqachon yuborilgan" });
+    }
+
+    if (
+      order.status === "expired" ||
+      order.payment_status === "expired" ||
+      order.status === "failed" ||
+      order.status === "error" ||
+      order.status === "pending"
+    ) {
+      await pool.query(
+        `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = $1`,
+        [id]
+      );
+      order.status = "processing";
+      order.payment_status = "paid";
+    }
 
     if (order.order_type === "premium_paymee") {
       const tx = await sendPremiumViaPaymee(order, {
@@ -5895,10 +5934,10 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
             if (promo.target_type === 'all' || promo.target_type === 'gift') {
               if (promo.target_amount === null || promo.target_amount === serverStars) {
                 
-                const userUsage = await client.query(
-                  `SELECT id FROM orders WHERE owner_user_id = $1 AND applied_promocode = $2 AND status IN ('success', 'pending', 'processing') LIMIT 1`,
-                  [ownerUserId, applied_promocode]
-                );
+                const userUsage = await client.query(PROMO_USER_USAGE_SQL, [
+                  ownerUserId,
+                  applied_promocode,
+                ]);
 
                 if (userUsage.rows.length === 0) {
                   finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
@@ -6300,8 +6339,22 @@ app.post("/api/admin/gift/send/:id", adminAuth, async (req, res) => {
     const q = await pool.query("SELECT * FROM orders WHERE id = $1 AND order_type='gift'", [id]);
     if (!q.rows.length) return res.status(404).json({ error: "Gift order topilmadi" });
     const order = q.rows[0];
-    if (order.status === "completed") {
+    if (order.status === "completed" || order.status === "gift_sent") {
       return res.status(400).json({ error: "Gift allaqachon yuborilgan" });
+    }
+    if (
+      order.status === "expired" ||
+      order.payment_status === "expired" ||
+      order.status === "failed" ||
+      order.status === "error" ||
+      order.status === "pending"
+    ) {
+      await pool.query(
+        `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = $1`,
+        [id]
+      );
+      order.status = "processing";
+      order.payment_status = "paid";
     }
     await sendGiftToUser(order);
     res.json({ success: true, message: "Gift yuborildi" });
@@ -7417,4 +7470,11 @@ app.listen(PORT, () => {
   const s = getCachedSettings();
   console.log(`🚀 Backend running on port ${PORT}`);
   console.log(`⚙️ settings jadvali: maintenance=${s.maintenance}, mode=${s.stars_purchase_mode}, pay=${s.fragment_payment_method}`);
+
+  if (bot) {
+    startPaymeeBalanceMonitor({
+      bot,
+      channelId: ERROR_LOG_CHANNEL_ID,
+    });
+  }
 });

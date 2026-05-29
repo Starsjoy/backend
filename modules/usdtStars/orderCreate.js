@@ -1,4 +1,8 @@
 import crypto from "crypto";
+import {
+  PROMO_USER_USAGE_SQL,
+  releasePromocodeUsage,
+} from "../promocodes/helpers.js";
 
 const ORDER_TYPE = "stars_usdt";
 
@@ -142,10 +146,10 @@ export async function createUsdtStarsOrder(req, res, ctx) {
           if (promo.is_active && promo.used_count < promo.usage_limit) {
             if (promo.target_type === "all" || promo.target_type === "stars") {
               if (promo.target_amount === null || promo.target_amount === starsNum) {
-                const userUsage = await client.query(
-                  `SELECT id FROM orders WHERE owner_user_id = $1 AND applied_promocode = $2 AND status IN ('success', 'pending', 'processing') LIMIT 1`,
-                  [ownerUserId, applied_promocode]
-                );
+                const userUsage = await client.query(PROMO_USER_USAGE_SQL, [
+                  ownerUserId,
+                  applied_promocode,
+                ]);
                 if (userUsage.rows.length === 0) {
                   finalDiscountAmount = Math.floor(finalAmount * (promo.discount_percent / 100));
                   finalAmount = finalAmount - finalDiscountAmount;
@@ -212,7 +216,7 @@ export async function createUsdtStarsOrder(req, res, ctx) {
     setTimeout(async () => {
       try {
         const check = await pool.query(
-          "SELECT status, order_type, owner_user_id, expired_notified FROM orders WHERE id = $1",
+          "SELECT status, order_type, owner_user_id, expired_notified, applied_promocode FROM orders WHERE id = $1",
           [order.id]
         );
         if (check.rows[0]?.status === "pending") {
@@ -220,6 +224,9 @@ export async function createUsdtStarsOrder(req, res, ctx) {
             "UPDATE orders SET status='expired', payment_status='expired' WHERE id=$1",
             [order.id]
           );
+          if (check.rows[0]?.applied_promocode) {
+            await releasePromocodeUsage(pool, check.rows[0].applied_promocode);
+          }
           releasePriceSlotByOrderId(order.id, slotKey);
           releaseDiscountPriceSlotByOrderId(order.id);
           removePriceFromCacheByOrderId(order.id);

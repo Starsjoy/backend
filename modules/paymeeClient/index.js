@@ -15,3 +15,5 @@ export {
   isPaymeeConfigError,
   isPaymeeRetryableError,
 } from "./client.js";
+
+export { startPaymeeBalanceMonitor, stopPaymeeBalanceMonitor } from "./balanceMonitor.js";
