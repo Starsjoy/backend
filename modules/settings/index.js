@@ -8,6 +8,7 @@ export {
   setMaintenance,
   setStarsPurchaseMode,
   setFragmentPaymentMethod,
+  setUserbotAutoRefill,
   bootstrapSettings,
   getCachedSettings,
   normalizeStarsPurchaseMode,

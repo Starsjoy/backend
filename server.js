@@ -57,6 +57,11 @@ import {
   PROMO_USER_USAGE_SQL,
   releasePromocodeUsage,
 } from "./modules/promocodes/helpers.js";
+import {
+  ensureUserbotStarRefillsTable,
+  ensureUserbotStarRefillForGiftOrder,
+  registerUserbotStarRefillRoutes,
+} from "./modules/userbotStarRefill/index.js";
 dotenv.config();
 const { Pool } = pkg;
 const app = express();
@@ -5854,6 +5859,16 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
       }
     }
 
+    // Userbot balansi < GIFT_BALANCE bo'lsa Paymee orqali @StarsjoySupport ga 50⭐ to'ldirish
+    try {
+      await ensureUserbotStarRefillForGiftOrder(
+        { pool, notifyOrdersChannel },
+        { trigger: "gift_order" }
+      );
+    } catch (refillErr) {
+      console.error("⚠️ Userbot refill (gift order):", refillErr.message);
+    }
+
     const amount = GIFT_PRICE_MAP[serverStars];
     if (!amount) {
       return res.status(400).json({ error: "Gift narxi topilmadi" });
@@ -7480,12 +7495,14 @@ registerPaymeePremiumRoutes(app, paymeePremiumCtx);
 registerRobynhoodAdminRoutes(app, { pool, adminAuth });
 
 registerSettingsRoutes(app, { pool, adminAuth });
+registerUserbotStarRefillRoutes(app, { pool, adminAuth });
 
 async function bootstrapAppData() {
   await ensureTokensTable(pool);
   await seedFragmentTokensFromEnvIfEmpty(pool);
   await syncFragmentTokensFromEnvIfMissing(pool);
   await bootstrapSettings(pool);
+  await ensureUserbotStarRefillsTable(pool);
 }
 
 // ======================
@@ -7506,7 +7523,9 @@ loadPendingOrdersToCache()
 app.listen(PORT, () => {
   const s = getCachedSettings();
   console.log(`🚀 Backend running on port ${PORT}`);
-  console.log(`⚙️ settings jadvali: maintenance=${s.maintenance}, mode=${s.stars_purchase_mode}, pay=${s.fragment_payment_method}`);
+  console.log(
+    `⚙️ settings: maintenance=${s.maintenance}, mode=${s.stars_purchase_mode}, pay=${s.fragment_payment_method}, userbot_refill=${s.userbot_auto_refill_enabled}`
+  );
 
   if (bot) {
     startPaymeeBalanceMonitor({

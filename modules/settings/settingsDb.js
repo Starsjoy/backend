@@ -7,12 +7,14 @@ export const SETTING_KEYS = {
   MAINTENANCE: "maintenance",
   STARS_PURCHASE_MODE: "stars_purchase_mode",
   FRAGMENT_PAYMENT_METHOD: "fragment_payment_method",
+  USERBOT_AUTO_REFILL: "userbot_auto_refill_enabled",
 };
 
 const DEFAULTS = {
   [SETTING_KEYS.MAINTENANCE]: "false",
   [SETTING_KEYS.STARS_PURCHASE_MODE]: "robynhood",
   [SETTING_KEYS.FRAGMENT_PAYMENT_METHOD]: "ton",
+  [SETTING_KEYS.USERBOT_AUTO_REFILL]: "true",
 };
 
 /** Eski `tokens` jadvalidan bir martalik ko'chirish */
@@ -79,6 +81,15 @@ export function parseMaintenance(value) {
   return s === "true" || s === "1" || s === "yes" || s === "on";
 }
 
+export function parseBoolSetting(value, defaultTrue = true) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  const s = String(value ?? "").trim().toLowerCase();
+  if (s === "true" || s === "1" || s === "yes" || s === "on") return true;
+  if (s === "false" || s === "0" || s === "no" || s === "off") return false;
+  return defaultTrue;
+}
+
 export async function loadSettings(pool, force = false) {
   if (!force && cache && Date.now() - cacheAt < CACHE_TTL_MS) {
     return { ...cache };
@@ -99,6 +110,10 @@ export async function loadSettings(pool, force = false) {
     stars_purchase_mode: normalizeStarsPurchaseMode(map[SETTING_KEYS.STARS_PURCHASE_MODE]),
     fragment_payment_method: normalizeFragmentPaymentMethod(
       map[SETTING_KEYS.FRAGMENT_PAYMENT_METHOD]
+    ),
+    userbot_auto_refill_enabled: parseBoolSetting(
+      map[SETTING_KEYS.USERBOT_AUTO_REFILL],
+      true
     ),
   };
 
@@ -152,6 +167,11 @@ export async function setFragmentPaymentMethod(pool, method) {
   return loadSettings(pool, true);
 }
 
+export async function setUserbotAutoRefill(pool, enabled) {
+  await setSetting(pool, SETTING_KEYS.USERBOT_AUTO_REFILL, enabled ? "true" : "false");
+  return loadSettings(pool, true);
+}
+
 /** `tokens` jadvalidagi eski kalitlardan `settings` ga ko'chirish */
 export async function migrateSettingsFromTokensTable(pool) {
   let moved = 0;
@@ -196,6 +216,14 @@ export async function seedSettingsFromEnvIfMissing(pool) {
     seeded++;
   }
 
+  if ((await getSettingRaw(pool, SETTING_KEYS.USERBOT_AUTO_REFILL)) == null) {
+    const on =
+      process.env.USERBOT_AUTO_REFILL_ENABLED !== "false" &&
+      process.env.USERBOT_AUTO_REFILL_ENABLED !== "0";
+    await setSetting(pool, SETTING_KEYS.USERBOT_AUTO_REFILL, on ? "true" : "false");
+    seeded++;
+  }
+
   if (seeded > 0) {
     console.log(`📦 settings jadvali .env dan seed: ${seeded} ta kalit`);
   }
@@ -208,6 +236,7 @@ export function getCachedSettings() {
       maintenance: false,
       stars_purchase_mode: "robynhood",
       fragment_payment_method: "ton",
+      userbot_auto_refill_enabled: true,
     };
   }
   return { ...cache };
