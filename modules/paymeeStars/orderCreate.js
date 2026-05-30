@@ -3,6 +3,10 @@ import {
   PROMO_USER_USAGE_SQL,
   releasePromocodeUsage,
 } from "../promocodes/helpers.js";
+import {
+  checkPaymeeFulfillment,
+  sendPaymeeInsufficientResponse,
+} from "../paymeeClient/availability.js";
 
 const ORDER_TYPE = "stars_paymee";
 
@@ -53,6 +57,17 @@ export async function createPaymeeStarsOrder(req, res, ctx) {
     const starsNum = parseInt(stars, 10);
     if (!Number.isInteger(starsNum) || starsNum < 50 || starsNum > 10000) {
       return res.status(400).json({ error: "Stars miqdori 50 dan 10000 gacha bo'lishi kerak" });
+    }
+
+    const paymeeCheck = await checkPaymeeFulfillment({ product: "stars", stars: starsNum });
+    if (!paymeeCheck.ok) {
+      if (paymeeCheck.code === "PAYMEE_INSUFFICIENT_BALANCE") {
+        return sendPaymeeInsufficientResponse(res, paymeeCheck);
+      }
+      return res.status(503).json({
+        error: paymeeCheck.error || "Paymee tekshiruvi muvaffaqiyatsiz",
+        code: paymeeCheck.code,
+      });
     }
 
     const cleanUsername = username.startsWith("@") ? username.slice(1) : username;

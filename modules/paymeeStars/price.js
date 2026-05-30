@@ -1,4 +1,5 @@
 import { paymeeSlotKey } from "./orderCreate.js";
+import { checkPaymeeFulfillment } from "../paymeeClient/availability.js";
 
 /**
  * GET /api/paymee-stars/price/:stars — Paymee buyurtma uchun alohida slot pool (paymee_N).
@@ -15,6 +16,15 @@ export async function getPaymeeStarsPrice(req, res, ctx) {
   const stars = parseInt(req.params.stars, 10);
   if (!stars || Number.isNaN(stars) || stars < 50 || stars > 10000) {
     return res.status(400).json({ error: "Stars 50 dan 10000 gacha bo'lishi kerak" });
+  }
+
+  const paymeeCheck = await checkPaymeeFulfillment({ product: "stars", stars });
+  if (!paymeeCheck.ok && paymeeCheck.code === "PAYMEE_INSUFFICIENT_BALANCE") {
+    return res.json({
+      available: false,
+      code: paymeeCheck.code,
+      message: paymeeCheck.message,
+    });
   }
 
   const slotKey = paymeeSlotKey(stars);

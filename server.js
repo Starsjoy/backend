@@ -50,6 +50,8 @@ import {
   getPaymeeWalletSummary,
   paymeeConfigured,
   startPaymeeBalanceMonitor,
+  checkPaymeeFulfillment,
+  sendPaymeeInsufficientResponse,
 } from "./modules/paymeeClient/index.js";
 import {
   PROMO_USER_USAGE_SQL,
@@ -5835,6 +5837,23 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
     if (!serverStars) {
       return res.status(400).json({ error: "Gift ID uchun narx topilmadi" });
     }
+
+    if (getCachedSettings().stars_purchase_mode === "paymee" && paymeeConfigured()) {
+      const paymeeCheck = await checkPaymeeFulfillment({
+        product: "gift",
+        stars: serverStars,
+      });
+      if (!paymeeCheck.ok) {
+        if (paymeeCheck.code === "PAYMEE_INSUFFICIENT_BALANCE") {
+          return sendPaymeeInsufficientResponse(res, paymeeCheck);
+        }
+        return res.status(503).json({
+          error: paymeeCheck.error || "Paymee tekshiruvi muvaffaqiyatsiz",
+          code: paymeeCheck.code,
+        });
+      }
+    }
+
     const amount = GIFT_PRICE_MAP[serverStars];
     if (!amount) {
       return res.status(400).json({ error: "Gift narxi topilmadi" });

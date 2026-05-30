@@ -3,6 +3,10 @@ import {
   PROMO_USER_USAGE_SQL,
   releasePromocodeUsage,
 } from "../promocodes/helpers.js";
+import {
+  checkPaymeeFulfillment,
+  sendPaymeeInsufficientResponse,
+} from "../paymeeClient/availability.js";
 
 const ORDER_TYPE = "premium_paymee";
 const VALID_MONTHS = [3, 6, 12];
@@ -67,6 +71,20 @@ export async function createPaymeePremiumOrder(req, res, ctx) {
     const monthsNum = parseInt(months, 10);
     if (!VALID_MONTHS.includes(monthsNum)) {
       return res.status(400).json({ error: "months: 3, 6 yoki 12 bo'lishi kerak" });
+    }
+
+    const paymeeCheck = await checkPaymeeFulfillment({
+      product: "premium",
+      months: monthsNum,
+    });
+    if (!paymeeCheck.ok) {
+      if (paymeeCheck.code === "PAYMEE_INSUFFICIENT_BALANCE") {
+        return sendPaymeeInsufficientResponse(res, paymeeCheck);
+      }
+      return res.status(503).json({
+        error: paymeeCheck.error || "Paymee tekshiruvi muvaffaqiyatsiz",
+        code: paymeeCheck.code,
+      });
     }
 
     const baseAmount = priceMap[monthsNum];

@@ -1,4 +1,5 @@
 import { paymeePremiumSlotKey } from "./orderCreate.js";
+import { checkPaymeeFulfillment } from "../paymeeClient/availability.js";
 
 /**
  * GET /api/paymee-premium/price/:months — Paymee premium slot (paymee_premium_N).
@@ -19,6 +20,15 @@ export async function getPaymeePremiumPrice(req, res, ctx) {
 
   if (![3, 6, 12].includes(months)) {
     return res.status(400).json({ error: "months: 3, 6 yoki 12 bo'lishi kerak" });
+  }
+
+  const paymeeCheck = await checkPaymeeFulfillment({ product: "premium", months });
+  if (!paymeeCheck.ok && paymeeCheck.code === "PAYMEE_INSUFFICIENT_BALANCE") {
+    return res.json({
+      available: false,
+      code: paymeeCheck.code,
+      message: paymeeCheck.message,
+    });
   }
 
   const baseAmount = priceMap[months];
