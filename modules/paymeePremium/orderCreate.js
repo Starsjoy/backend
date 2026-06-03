@@ -13,6 +13,7 @@ import {
   validateClientFinalAmount,
   validateClientSlotPrice,
 } from "../payments/clientAmountGuard.js";
+import { getExpiredOrderNotifyText } from "../notifications/orderExpiredMessages.js";
 
 const ORDER_TYPE = "premium_paymee";
 const VALID_MONTHS = [3, 6, 12];
@@ -290,7 +291,7 @@ export async function createPaymeePremiumOrder(req, res, ctx) {
             try {
               await bot.telegram.sendMessage(
                 owner,
-                `⚠️ Siz premium (Paymee) sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.\n\n👉 @StarsPaymeeSupport`
+                getExpiredOrderNotifyText("premium_paymee")
               );
               await pool.query(`UPDATE orders SET expired_notified = true WHERE id = $1`, [
                 order.id,

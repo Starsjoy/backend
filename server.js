@@ -67,6 +67,10 @@ import {
   rejectForbiddenClientPriceFields,
   sendGuardFailure,
 } from "./modules/payments/clientAmountGuard.js";
+import {
+  getExpiredOrderNotifyText,
+  shouldSendExpiredOrderNotify,
+} from "./modules/notifications/orderExpiredMessages.js";
 dotenv.config();
 const { Pool } = pkg;
 const app = express();
@@ -396,30 +400,12 @@ async function loadPendingOrdersToCache() {
         }
         
         // Xabar yuborish (faqat 1 marta)
-        if (['stars', 'gift', 'premium'].includes(row.order_type) && row.owner_user_id && bot) {
+        if (shouldSendExpiredOrderNotify(row.order_type) && row.owner_user_id && bot) {
           try {
-            let expiredNotificationText = '';
-            if (row.order_type === 'stars') {
-              expiredNotificationText = `⚠️ Siz stars sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
-
-Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
-
-👉 @StarsjoySupport`;
-            } else if (row.order_type === 'gift') {
-              expiredNotificationText = `⚠️ Siz gift yuborishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
-
-Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
-
-👉 @StarsjoySupport`;
-            } else if (row.order_type === 'premium') {
-              expiredNotificationText = `⚠️ Siz premium sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
-
-Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
-
-👉 @StarsjoySupport`;
-            }
-            
-            await bot.telegram.sendMessage(row.owner_user_id, expiredNotificationText);
+            await bot.telegram.sendMessage(
+              row.owner_user_id,
+              getExpiredOrderNotifyText(row.order_type)
+            );
             
             // expired_notified ni true qilish
             await pool.query(
@@ -653,30 +639,12 @@ setInterval(async () => {
         }
 
         // Order expired bo'lsa, foydalanuvchiga xabar yuborish (faqat 1 marta)
-        if (['stars', 'gift', 'premium'].includes(row.order_type) && row.owner_user_id && bot) {
+        if (shouldSendExpiredOrderNotify(row.order_type) && row.owner_user_id && bot) {
           try {
-            let expiredNotificationText = '';
-            if (row.order_type === 'stars') {
-              expiredNotificationText = `⚠️ Siz stars sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
-
-Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
-
-👉 @StarsjoySupport`;
-            } else if (row.order_type === 'gift') {
-              expiredNotificationText = `⚠️ Siz gift yuborishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
-
-Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
-
-👉 @StarsjoySupport`;
-            } else if (row.order_type === 'premium') {
-              expiredNotificationText = `⚠️ Siz premium sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
-
-Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
-
-👉 @StarsjoySupport`;
-            }
-            
-            await bot.telegram.sendMessage(row.owner_user_id, expiredNotificationText);
+            await bot.telegram.sendMessage(
+              row.owner_user_id,
+              getExpiredOrderNotifyText(row.order_type)
+            );
             
             // expired_notified ni true qilish
             await pool.query(
@@ -2933,12 +2901,10 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
           const alreadyNotified = check.rows[0]?.expired_notified;
           if (ownerUserId && bot && !alreadyNotified) {
             try {
-              const expiredNotificationText = `⚠️ Siz stars sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
-
-Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
-
-👉 @StarsjoySupport`;
-              await bot.telegram.sendMessage(ownerUserId, expiredNotificationText);
+              await bot.telegram.sendMessage(
+                ownerUserId,
+                getExpiredOrderNotifyText("stars")
+              );
               await pool.query(
                 `UPDATE orders SET expired_notified = true WHERE id = $1`,
                 [order.id]
@@ -3808,12 +3774,10 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
           const alreadyNotified = check.rows[0]?.expired_notified;
           if (ownerUserId && bot && !alreadyNotified) {
             try {
-              const expiredNotificationText = `⚠️ Siz premium sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
-
-Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
-
-👉 @StarsjoySupport`;
-              await bot.telegram.sendMessage(ownerUserId, expiredNotificationText);
+              await bot.telegram.sendMessage(
+                ownerUserId,
+                getExpiredOrderNotifyText("premium")
+              );
               await pool.query(
                 `UPDATE orders SET expired_notified = true WHERE id = $1`,
                 [order.id]
@@ -6120,12 +6084,10 @@ const uniqueSum = await generateUniqueOrderSum(finalAmount, client);
           const alreadyNotified = check.rows[0]?.expired_notified;
           if (ownerUserId && bot && !alreadyNotified) {
             try {
-              const expiredNotificationText = `⚠️ Siz gift yuborishga harakat qildingiz, ammo to'lov amalga oshirilmadi.
-
-Agar qandaydir muammo yuzaga kelgan bo'lsa, iltimos admin bilan bog'laning:
-
-👉 @StarsjoySupport`;
-              await bot.telegram.sendMessage(ownerUserId, expiredNotificationText);
+              await bot.telegram.sendMessage(
+                ownerUserId,
+                getExpiredOrderNotifyText("gift")
+              );
               await pool.query(
                 `UPDATE orders SET expired_notified = true WHERE id = $1`,
                 [order.id]

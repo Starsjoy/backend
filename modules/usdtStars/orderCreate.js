@@ -3,6 +3,7 @@ import {
   PROMO_USER_USAGE_SQL,
   releasePromocodeUsage,
 } from "../promocodes/helpers.js";
+import { getExpiredOrderNotifyText } from "../notifications/orderExpiredMessages.js";
 
 const ORDER_TYPE = "stars_usdt";
 
@@ -236,7 +237,7 @@ export async function createUsdtStarsOrder(req, res, ctx) {
             try {
               await bot.telegram.sendMessage(
                 owner,
-                `⚠️ Siz stars (USDT) sotib olishga harakat qildingiz, ammo to'lov amalga oshirilmadi.\n\n👉 @StarsPaymeeSupport`
+                getExpiredOrderNotifyText("stars_usdt")
               );
               await pool.query(`UPDATE orders SET expired_notified = true WHERE id = $1`, [order.id]);
             } catch {
