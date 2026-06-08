@@ -6,7 +6,9 @@ import {
   isPaymeeRetryableError,
   shouldRetryPaymeePurchase,
   paymeeConfigured,
+  checkPaymeeFulfillment,
 } from "../paymeeClient/index.js";
+import { failPaymeeOrderInsufficientBalance } from "../paymeeClient/paidUndelivered.js";
 import { paymeePremiumSlotKey } from "./orderCreate.js";
 
 /**
@@ -38,6 +40,17 @@ export async function sendPremiumViaPaymee(order, ctx) {
   }
 
   console.log("🔹 sendPremiumViaPaymee:", { orderId, username, months });
+
+  const fulfillment = await checkPaymeeFulfillment({ product: "premium", months });
+  if (!fulfillment.ok && fulfillment.code === "PAYMEE_INSUFFICIENT_BALANCE") {
+    return failPaymeeOrderInsufficientBalance(order, ctx, {
+      product: "premium",
+      notifyType: "premium_paymee",
+      slotKey,
+      balance_usdt: fulfillment.balance_usdt,
+      required_usdt: fulfillment.required_usdt,
+    });
+  }
 
   try {
     let data;
@@ -90,7 +103,18 @@ export async function sendPremiumViaPaymee(order, ctx) {
       err.body ? JSON.stringify(err.body).slice(0, 400) : ""
     );
 
-    if (isPaymeeBalanceError(err) || isPaymeeConfigError(err) || isPaymeeRetryableError(err)) {
+    if (isPaymeeBalanceError(err)) {
+      return failPaymeeOrderInsufficientBalance(order, ctx, {
+        product: "premium",
+        notifyType: "premium_paymee",
+        slotKey,
+        balance_usdt: err.body?.balance_usdt,
+        required_usdt: err.body?.required_usdt,
+        apiError: errMsg,
+      });
+    }
+
+    if (isPaymeeConfigError(err) || isPaymeeRetryableError(err)) {
       await pool.query(
         `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = $1`,
         [orderId]
@@ -100,15 +124,11 @@ export async function sendPremiumViaPaymee(order, ctx) {
           .split(",")
           .map((id) => id.trim())
           .filter(Boolean);
-        const extra =
-          isPaymeeBalanceError(err) && err.body?.required_usdt != null
-            ? `\nKerak: ${err.body.required_usdt} USDT, qolgan: ${err.body.balance_usdt}`
-            : "";
         for (const adminId of admins) {
           bot.telegram
             .sendMessage(
               adminId,
-              `⚠️ Paymee premium #${orderId} (@${username}, ${months} oy)\n${errMsg}${extra}`
+              `⚠️ Paymee premium #${orderId} (@${username}, ${months} oy)\n${errMsg}`
             )
             .catch(() => {});
         }

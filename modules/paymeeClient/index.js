@@ -23,6 +23,7 @@ export {
   sendPaymeeInsufficientResponse,
   PAYMEE_OUT_OF_STOCK_MESSAGES,
 } from "./availability.js";
+export { failPaymeeOrderInsufficientBalance } from "./paidUndelivered.js";
 export {
   searchPaymeeRecipient,
   mapPaymeeSearchToProfile,

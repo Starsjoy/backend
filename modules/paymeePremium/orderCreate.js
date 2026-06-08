@@ -3,10 +3,7 @@ import {
   PROMO_USER_USAGE_SQL,
   releasePromocodeUsage,
 } from "../promocodes/helpers.js";
-import {
-  checkPaymeeFulfillment,
-  sendPaymeeInsufficientResponse,
-} from "../paymeeClient/availability.js";
+import { checkPaymeeFulfillment } from "../paymeeClient/availability.js";
 import {
   rejectForbiddenClientPriceFields,
   sendGuardFailure,
@@ -89,10 +86,10 @@ export async function createPaymeePremiumOrder(req, res, ctx) {
       product: "premium",
       months: monthsNum,
     });
-    if (!paymeeCheck.ok) {
-      if (paymeeCheck.code === "PAYMEE_INSUFFICIENT_BALANCE") {
-        return sendPaymeeInsufficientResponse(res, paymeeCheck);
-      }
+    if (
+      !paymeeCheck.ok &&
+      paymeeCheck.code !== "PAYMEE_INSUFFICIENT_BALANCE"
+    ) {
       return res.status(503).json({
         error: paymeeCheck.error || "Paymee tekshiruvi muvaffaqiyatsiz",
         code: paymeeCheck.code,
