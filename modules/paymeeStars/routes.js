@@ -106,7 +106,7 @@ export function registerPaymeeStarsRoutes(app, ctx) {
       res.json({
         configured: true,
         api_url: apiUrl,
-        docs: "https://starspaymee.starstg.uz/api/purchase/v1/docs",
+        docs: "https://api.starstg.uz/api/purchase/v1/docs",
         health,
         balance,
         pricing,

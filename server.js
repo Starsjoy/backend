@@ -52,6 +52,8 @@ import {
   startPaymeeBalanceMonitor,
   checkPaymeeFulfillment,
   sendPaymeeInsufficientResponse,
+  searchPaymeeRecipient,
+  mapPaymeeSearchToProfile,
 } from "./modules/paymeeClient/index.js";
 import {
   PROMO_USER_USAGE_SQL,
@@ -2460,72 +2462,38 @@ app.patch("/api/transactions/update/:id", adminAuth, async (req, res) => {
 // =================================================
 app.post("/api/search", searchLimiter, telegramAuth, async (req, res) => {
   try {
-    console.log("=== 🔍 /api/search (RobynHood) boshlandi ===");
-    let { username } = req.body;
+    console.log("=== 🔍 /api/search (StarsPaymee Partner API) boshlandi ===");
+    const { username, stars } = req.body;
     console.log("📥 Keldi username:", username);
     if (!username) {
       return res.status(400).json({ error: "username kerak" });
     }
-    const cleanUsername = username.startsWith("@")
-      ? username.slice(1)
-      : username;
-    console.log("🧹 Tozalangan username:", cleanUsername);
-    // 🟦 RobynHood API ga so‘rov yuboramiz
-    console.log("🌐 RobynHood API'ga so‘rov yuborilmoqda...");
-    const response = await fetch("https://robynhood.parssms.info/api/search", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": process.env.ROB_API_KEY, // bu yerga API key qo'yiladi
-        "accept": "application/json",
-      },
-      body: JSON.stringify({
-        product_type: "stars",
-        query: cleanUsername,
-        quantity: "50",
-      }),
+
+    const starsNum = parseInt(stars, 10);
+    const quantity = Number.isInteger(starsNum) ? starsNum : 50;
+
+    const { data, cleanUsername } = await searchPaymeeRecipient({
+      productType: "stars",
+      query: username,
+      quantity,
     });
-    console.log("📡 Javob status kodi:", response.status);
-    const text = await response.text();
-    console.log("📦 API xom javob:", text);
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch (err) {
-      console.error("❌ JSON parse xato:", err);
-      return res.status(500).json({
-        error: "API noto'g'ri format qaytardi",
-        raw: text,
-      });
-    }
-    console.log("🔍 JSON parse bo‘ldi:", data);
-    if (!data.ok || !data.found) {
+
+    const profile = mapPaymeeSearchToProfile(data, cleanUsername);
+    if (!profile) {
       return res.status(404).json({
         error: "Foydalanuvchi topilmadi",
         details: data,
       });
     }
-    const found = data.found;
-    const fullName = found.name || cleanUsername;
-    const recipient = found.recipient;
-    const photoHTML = found.photo || "";
-    // HTML <img ...> dan src URL ajratamiz
-    const match = photoHTML.match(/src="([^"]+)"/);
-    const imageUrl = match ? match[1] : null;
-    console.log("👤 Foydalanuvchi:", fullName);
-    console.log("🖼️ Rasm URL:", imageUrl);
-    console.log("🆔 Recipient ID:", recipient);
-    return res.json({
-      username: cleanUsername,
-      fullName: fullName,
-      imageUrl: imageUrl,
-      recipient: recipient, // ⚠ MUHIM — purchase uchun shu kerak
-    });
+
+    console.log("👤 Foydalanuvchi:", profile.fullName, "| recipient:", profile.recipient);
+    // recipient ⚠ MUHIM — purchase uchun shu kerak
+    return res.json(profile);
   } catch (err) {
-    console.error("💥 Server xato:", err);
-    return res.status(500).json({
-      error: "Serverda xatolik",
-      details: err.message,
+    console.error("💥 /api/search xato:", err.message);
+    const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 500;
+    return res.status(status).json({
+      error: err.message || "Serverda xatolik",
     });
   }
 });
@@ -3439,95 +3407,35 @@ async function processPremiumReferralBonus(username, transactionId) {
 //-----------------------
 app.post("/api/premium/search", searchLimiter, telegramAuth, async (req, res) => {
   try {
-    let { username } = req.body;
-    console.log("\n================ PREMIUM SEARCH ================");
+    const { username, months } = req.body;
+    console.log("\n================ PREMIUM SEARCH (StarsPaymee Partner API) ================");
     console.log("📥 Keldi username:", username);
     if (!username) {
       console.log("⛔ username yo‘q");
       return res.status(400).json({ error: "username kerak" });
     }
-    const clean = username.startsWith("@")
-      ? username.slice(1)
-      : username;
-    console.log("🧹 Tozalangan username:", clean);
-    // RobynHood API
-    console.log("🌐 Providerga so‘rov yuborilmoqda...");
-    const response = await fetch("https://robynhood.parssms.info/api/search", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": process.env.ROB_API_KEY,
-        accept: "application/json",
-      },
-      body: JSON.stringify({
-        product_type: "premium",
-        query: clean,
-        months: "3",
-      }),
+
+    const monthsNum = parseInt(months, 10);
+    const m = [3, 6, 12].includes(monthsNum) ? monthsNum : 3;
+
+    const { data, cleanUsername } = await searchPaymeeRecipient({
+      productType: "premium",
+      query: username,
+      months: m,
     });
-    console.log("📡 Provider status:", response.status);
-    const raw = await response.text();
-    console.log("📦 Provider RAW response:", raw);
-    // Provider offline -> "false"
-    if (raw.trim() === "false") {
-      console.log("❌ Provider OFFLINE yoki IP blok");
-      return res.status(503).json({
-        error: "Provider offline yoki IP bloklangan"
-      });
+
+    const profile = mapPaymeeSearchToProfile(data, cleanUsername);
+    if (!profile) {
+      console.log("❌ found=false → user topilmadi");
+      return res.status(404).json({ error: "Foydalanuvchi topilmadi" });
     }
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch (err) {
-      console.log("❌ JSON parse xato:", err);
-      return res.status(502).json({
-        error: "Provider noto‘g‘ri format qaytardi",
-        raw
-      });
-    }
-    console.log("🔍 Provider JSON:", data);
-    if (!data.ok || !data.found) {
-      console.log("❌ found=false → Premium yo‘q yoki user topilmadi");
-      return res.status(404).json({
-        error: "❌ Premium mavjud emas yoki user yo‘q"
-      });
-    }
-    const found = data.found;
-    console.log("👤 found object:", found);
-    // 🆔 Provider ID fieldlarini tekshiramiz
-    const recipientId =
-      found.id ||
-      found.user_id ||
-      found.uid ||
-      found.recipient ||
-      found.telegram_id ||
-      null;
-    console.log("🆔 Aniqlangan recipient ID:", recipientId);
-    if (!recipientId) {
-      console.log("❌ Provider ID qaytarmadi!");
-      return res.status(404).json({
-        error: "Provider ID qaytarmadi — premium sotib bo‘lmaydi"
-      });
-    }
-    // 🖼 Rasm URL ajratish
-    let imageUrl = null;
-    if (found.photo) {
-      const m = found.photo.match(/src="([^"]+)"/);
-      imageUrl = m ? m[1] : null;
-    }
-    console.log("🖼 Image URL:", imageUrl);
-    // Frontendga qaytariladigan JSON
-    const responseJson = {
-      username: clean,
-      fullName: found.name || clean,
-      imageUrl,
-      recipient: recipientId
-    };
-    console.log("➡ Frontendga qaytmoqda:", responseJson);
-    return res.json(responseJson);
+
+    console.log("➡ Frontendga qaytmoqda:", profile.fullName, "| recipient:", profile.recipient);
+    return res.json(profile);
   } catch (err) {
-    console.error("💥 PREMIUM SEARCH SERVER ERROR:", err);
-    return res.status(500).json({ error: "Server xato" });
+    console.error("💥 PREMIUM SEARCH ERROR:", err.message);
+    const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 500;
+    return res.status(status).json({ error: err.message || "Server xato" });
   }
 });
 //-----------------------
@@ -6403,8 +6311,8 @@ app.get("/api/admin/wallet-info", adminAuth, async (req, res) => {
       : Promise.resolve({ configured: false });
 
     const [balanceData, priceData, paymee] = await Promise.all([
-      getRobynBalance(),
-      getRobynStarsPrice(50),
+      getRobynBalance().catch(() => ({})),
+      getRobynStarsPrice(50).catch(() => ({})),
       paymeePromise,
     ]);
 

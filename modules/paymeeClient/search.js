@@ -13,11 +13,13 @@ export function extractPhotoUrl(photoField) {
 }
 
 /**
- * @param {object} data — Partner { ok, found: { name, photo, recipient, myself? } }
+ * @param {object} data — Partner { success, found: { name, photo, recipient, myself?, premium? } }
  * @param {string} cleanUsername
  */
 export function mapPaymeeSearchToProfile(data, cleanUsername) {
-  if (!data?.ok || !data?.found) {
+  // Partner API yangi format: { success: true, found: {...} }.
+  // Eski `ok` maydonini ham qabul qilamiz (orqaga moslik uchun).
+  if ((data?.success !== true && data?.ok !== true) || !data?.found) {
     return null;
   }
   const found = data.found;
@@ -31,6 +33,8 @@ export function mapPaymeeSearchToProfile(data, cleanUsername) {
     imageUrl,
     recipient,
     myself: Boolean(found.myself),
+    // Premium qidiruvida: profil allaqachon Premium'ga egami (null = aniqlanmadi)
+    premium: found.premium ?? null,
   };
 }
 

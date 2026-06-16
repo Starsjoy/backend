@@ -12,7 +12,7 @@ export const SETTING_KEYS = {
 
 const DEFAULTS = {
   [SETTING_KEYS.MAINTENANCE]: "false",
-  [SETTING_KEYS.STARS_PURCHASE_MODE]: "robynhood",
+  [SETTING_KEYS.STARS_PURCHASE_MODE]: "paymee",
   [SETTING_KEYS.FRAGMENT_PAYMENT_METHOD]: "ton",
   [SETTING_KEYS.USERBOT_AUTO_REFILL]: "true",
 };
@@ -57,10 +57,10 @@ export async function setSetting(pool, key, value) {
 }
 
 export function normalizeStarsPurchaseMode(mode) {
-  const m = String(mode || "robynhood").trim().toLowerCase();
+  const m = String(mode || "paymee").trim().toLowerCase();
   if (m === "fragment") return "fragment";
-  if (m === "paymee") return "paymee";
-  return "robynhood";
+  if (m === "robynhood") return "robynhood";
+  return "paymee";
 }
 
 export function normalizeFragmentPaymentMethod(method) {
@@ -195,7 +195,7 @@ export async function seedSettingsFromEnvIfMissing(pool) {
   let seeded = 0;
 
   if ((await getSettingRaw(pool, SETTING_KEYS.STARS_PURCHASE_MODE)) == null) {
-    const envMode = String(process.env.STARS_PURCHASE_MODE || "robynhood")
+    const envMode = String(process.env.STARS_PURCHASE_MODE || "paymee")
       .trim()
       .toLowerCase();
     const mode = normalizeStarsPurchaseMode(envMode);
@@ -234,7 +234,7 @@ export function getCachedSettings() {
   if (!cache) {
     return {
       maintenance: false,
-      stars_purchase_mode: "robynhood",
+      stars_purchase_mode: "paymee",
       fragment_payment_method: "ton",
       userbot_auto_refill_enabled: true,
     };

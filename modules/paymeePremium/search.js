@@ -1,10 +1,10 @@
 import {
-  mapRobynSearchToProfile,
-  searchRobynRecipient,
-} from "../robynhoodClient/search.js";
+  mapPaymeeSearchToProfile,
+  searchPaymeeRecipient,
+} from "../paymeeClient/index.js";
 
 /**
- * POST /api/paymee-premium/search — RobynHood profil, yetkazish Paymee
+ * POST /api/paymee-premium/search — StarsPaymee Partner API profil, Premium yetkazish
  */
 export async function paymeePremiumSearch(req, res) {
   try {
@@ -16,16 +16,16 @@ export async function paymeePremiumSearch(req, res) {
     const monthsNum = parseInt(months, 10);
     const m = [3, 6, 12].includes(monthsNum) ? monthsNum : 3;
 
-    const { data, cleanUsername } = await searchRobynRecipient({
+    const { data, cleanUsername } = await searchPaymeeRecipient({
       productType: "premium",
       query: username,
       months: m,
     });
 
-    const profile = mapRobynSearchToProfile(data, cleanUsername);
+    const profile = mapPaymeeSearchToProfile(data, cleanUsername);
     if (!profile) {
       return res.status(404).json({
-        error: "Foydalanuvchi topilmadi yoki Premium mavjud emas",
+        error: "Foydalanuvchi topilmadi",
         details: data,
       });
     }

@@ -1,10 +1,10 @@
 import {
-  mapRobynSearchToProfile,
-  searchRobynRecipient,
-} from "../robynhoodClient/search.js";
+  mapPaymeeSearchToProfile,
+  searchPaymeeRecipient,
+} from "../paymeeClient/index.js";
 
 /**
- * POST /api/paymee-stars/search — RobynHood profil (rasm + ism), yetkazish Paymee
+ * POST /api/paymee-stars/search — StarsPaymee Partner API profil (rasm + ism)
  */
 export async function paymeeStarsSearch(req, res) {
   try {
@@ -16,13 +16,13 @@ export async function paymeeStarsSearch(req, res) {
     const starsNum = parseInt(stars, 10);
     const quantity = Number.isInteger(starsNum) ? starsNum : 50;
 
-    const { data, cleanUsername } = await searchRobynRecipient({
+    const { data, cleanUsername } = await searchPaymeeRecipient({
       productType: "stars",
       query: username,
       quantity,
     });
 
-    const profile = mapRobynSearchToProfile(data, cleanUsername);
+    const profile = mapPaymeeSearchToProfile(data, cleanUsername);
     if (!profile) {
       return res.status(404).json({
         error: "Foydalanuvchi topilmadi",
