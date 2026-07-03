@@ -28,6 +28,10 @@ import {
   sendPremiumViaPaymee,
 } from "./modules/paymeePremium/index.js";
 import {
+  USER_HISTORY_SQL,
+  mapUserHistoryRows,
+} from "./modules/orders/userHistory.js";
+import {
   ensureTokensTable,
   seedFragmentTokensFromEnvIfEmpty,
   syncFragmentTokensFromEnvIfMissing,
@@ -4279,18 +4283,7 @@ app.get("/api/dashboard/init", telegramAuth, async (req, res) => {
       referralLeaderboardPromise,
       
       // 3. User history (agar user_id mavjud bo'lsa)
-      user_id ? pool.query(`
-        SELECT id, recipient_username AS username, type_amount AS stars, summ AS amount,
-          CASE 
-            WHEN status = 'completed' AND order_type = 'stars' THEN 'stars_sent'
-            WHEN status = 'completed' AND order_type = 'premium' THEN 'premium_sent'
-            WHEN status = 'completed' AND order_type = 'gift' THEN 'gift_sent'
-            ELSE status
-          END AS status,
-          created_at, order_type AS kind
-        FROM orders WHERE owner_user_id = $1
-        ORDER BY created_at DESC LIMIT 50
-      `, [user_id]) : Promise.resolve({ rows: [] }),
+      user_id ? pool.query(USER_HISTORY_SQL + " LIMIT 50", [user_id]) : Promise.resolve({ rows: [] }),
       
       // 4. Referral stats (agar user_id mavjud bo'lsa)
       user_id ? pool.query(`
@@ -4362,7 +4355,7 @@ app.get("/api/dashboard/init", telegramAuth, async (req, res) => {
         top10: referralLeaderboardResult.rows,
         me: myRefRankResult.rows[0] || null
       },
-      history: historyResult.rows,
+      history: mapUserHistoryRows(historyResult.rows),
       referralStats: referralStatsResult.rows[0] || { referral_balance: 0, total_referrals: 0 },
       unreadCount: parseInt(unreadResult.rows[0]?.unread_count || 0),
       loadTime: duration
@@ -4473,26 +4466,9 @@ app.get("/api/user/history/:userId", telegramAuth, async (req, res) => {
     const { userId } = req.params;
     if (!userId)
       return res.status(400).json({ error: "userId kerak" });
-    const query = `
-      SELECT
-        id,
-        recipient_username AS username,
-        type_amount AS stars,
-        summ AS amount,
-        CASE 
-          WHEN status = 'completed' AND order_type = 'stars' THEN 'stars_sent'
-          WHEN status = 'completed' AND order_type = 'premium' THEN 'premium_sent'
-          WHEN status = 'completed' AND order_type = 'gift' THEN 'gift_sent'
-          ELSE status
-        END AS status,
-        created_at,
-        order_type AS kind
-      FROM orders
-      WHERE owner_user_id = $1
-      ORDER BY created_at DESC;
-    `;
+    const query = USER_HISTORY_SQL;
     const result = await pool.query(query, [userId]);
-    res.json(result.rows);
+    res.json(mapUserHistoryRows(result.rows));
   } catch (err) {
     console.error("❌ USER HISTORY ERROR:", err);
     res.status(500).json({ error: "Server xato" });
