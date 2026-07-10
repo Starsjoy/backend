@@ -17,8 +17,9 @@ const ADMIN_IDS = process.env.ADMIN_IDS.split(',').map(id => Number(id));
 // Mini app URL
 const APP_URL = process.env.WEBAPP_URL;
 
-// Majburiy obuna kanali
-const REQUIRED_CHANNEL = '@starsjoy';
+// Majburiy obuna kanali — server.js dagi SUBSCRIPTION_CHANNEL bilan bir xil env'dan
+const REQUIRED_CHANNEL = process.env.SUBSCRIPTION_CHANNEL || '@starsjoy';
+const CHANNEL_URL = `https://t.me/${REQUIRED_CHANNEL.replace(/^@/, '')}`;
 
 // Buyurtmalar kanali
 const ORDERS_CHANNEL = -1003752422150;
@@ -53,7 +54,7 @@ function getSubscribeText() {
 
 function getSubscribeKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.url('📢 Kanalga obuna bo\'lish', 'https://t.me/starsjoy')],
+    [Markup.button.url('📢 Kanalga obuna bo\'lish', CHANNEL_URL)],
     [Markup.button.callback('✅ Tekshirish', 'check_subscription')]
   ]);
 }

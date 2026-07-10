@@ -68,6 +68,11 @@ import {
   ensureUserbotStarRefillForGiftOrder,
   registerUserbotStarRefillRoutes,
 } from "./modules/userbotStarRefill/index.js";
+import {
+  ensureUserMissionsTable,
+  isChannelMember,
+  registerMissionRoutes,
+} from "./modules/missions/index.js";
 import { sendOrdersChannelMessage } from "./modules/telegram/channelNotify.js";
 import {
   rejectForbiddenClientPriceFields,
@@ -1295,7 +1300,9 @@ function parseTelegramChatId(envVal, fallback) {
 
 const ORDERS_CHANNEL = parseTelegramChatId(process.env.ORDERS_CHANNEL, -1003752422150);
 const ERROR_LOG_CHANNEL_ID = parseTelegramChatId(process.env.ERROR_LOG_CHANNEL_ID, -1003836618718);
-const SUBSCRIPTION_CHANNEL = "@starsjoyuz"; // Obuna bo'lish kerak bo'lgan kanal
+// Majburiy obuna kanali. token.js ham xuddi shu env'dan o'qiydi — ikkalasi
+// mos kelmasa missiya tekshiruvi jimgina ishlamay qoladi. Bot kanalda ADMIN bo'lsin.
+const SUBSCRIPTION_CHANNEL = process.env.SUBSCRIPTION_CHANNEL || "@starsjoy";
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://vitahealth.uz";
 let bot = null;
 if (BOT_TOKEN) {
@@ -4508,8 +4515,6 @@ app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) =
       language: language || "uz",
     });
 
-    const user = await pool.query("SELECT * FROM users WHERE user_id = $1", [tgUserId]);
-
     if (created) {
       console.log(
         `👤 Yangi user ro'yxatdan o'tdi: ${savedUsername} (user_id: ${tgUserId})`
@@ -4522,6 +4527,7 @@ app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) =
           [referral_code]
         );
         referrer_user_id = referrer.rows[0]?.user_id || null;
+        if (referrer_user_id === tgUserId) referrer_user_id = null; // o'ziga o'zi havola
       }
 
       if (referrer_user_id) {
@@ -4533,18 +4539,28 @@ app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) =
 
           if (referrerResult.rows.length > 0) {
             const referrerUsername = referrerResult.rows[0].username;
+
+            // Havola orqali kelgan do'st DARHOL bog'lanadi — missiya progressi
+            // (countSubscribedFriends) shu ustunga tayanadi, admin tasdig'ini kutmaydi.
             await pool.query(
-              `INSERT INTO referral_requests 
-               (owner_user_id, owner_username, referrer_user_id, referrer_username, subscribe_referrer) 
-               VALUES ($1, $2, $3, $4, $5)`,
-              [tgUserId, savedUsername, referrer_user_id, referrerUsername, false]
+              "UPDATE users SET referrer_user_id = $1 WHERE user_id = $2",
+              [referrer_user_id, tgUserId]
+            );
+
+            // is_accepted=true — aks holda admin keyinroq tasdiqlab total_referrals ni
+            // ikkinchi marta oshirgan bo'lardi (subscribe-check allaqachon oshiradi).
+            await pool.query(
+              `INSERT INTO referral_requests
+               (owner_user_id, owner_username, referrer_user_id, referrer_username, subscribe_referrer, is_accepted)
+               VALUES ($1, $2, $3, $4, false, true)`,
+              [tgUserId, savedUsername, referrer_user_id, referrerUsername]
             );
             console.log(
-              `📝 Referral request AUTO-created: ${savedUsername} -> ${referrerUsername}`
+              `🔗 Referral bog'landi (havola): ${savedUsername} -> ${referrerUsername}`
             );
           }
         } catch (err) {
-          console.error("❌ Auto-create referral request error:", err.message);
+          console.error("❌ Auto-link referral error:", err.message);
         }
       }
 
@@ -4553,6 +4569,7 @@ app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) =
       });
     }
 
+    const user = await pool.query("SELECT * FROM users WHERE user_id = $1", [tgUserId]);
     res.json(user.rows[0]);
   } catch (err) {
     console.error("❌ /api/referral/register ERROR:", err);
@@ -4581,9 +4598,23 @@ app.post("/api/user/subscribe-check", authLimiter, telegramAuth, async (req, res
       return res.json({ 
         success: true, 
         message: "Allaqachon obuna bo'lgansiz",
-        subscribe_user: true 
+        subscribe_user: true
       });
     }
+
+    // 🛡️ Kanalga obunani HAQIQATAN tekshiramiz. Bu flag missiya sovg'alarini
+    // (real Telegram gift = pul) ochadi, shuning uchun client so'ziga ishonmaymiz.
+    // Bot javob bermasa (null) — obuna bermaymiz, aks holda tekshiruvni chetlab o'tish mumkin.
+    const subscribed = await isChannelMember(missionCtx, tgUserId);
+    if (subscribed !== true) {
+      return res.status(400).json({
+        success: false,
+        subscribe_user: false,
+        not_subscribed: true,
+        error: "Siz hali kanalga obuna bo'lmagansiz",
+      });
+    }
+
     // subscribe_user ni true qilish
     await pool.query(
       "UPDATE users SET subscribe_user = true WHERE user_id = $1",
@@ -7367,12 +7398,26 @@ registerUserbotStarRefillRoutes(app, {
   logChannelId: ERROR_LOG_CHANNEL_ID,
 });
 
+// Missiya moduli: do'st tekshiruvi bot orqali, gift userbot orqali ketadi.
+// subscribe-check endpoint'i ham shu ctx'ni ishlatadi (isChannelMember).
+const missionCtx = {
+  pool,
+  bot,
+  subscriptionChannel: SUBSCRIPTION_CHANNEL,
+  telegramAuth,
+  authLimiter,
+  sendGiftToUser,
+};
+
+registerMissionRoutes(app, missionCtx);
+
 async function bootstrapAppData() {
   await ensureTokensTable(pool);
   await seedFragmentTokensFromEnvIfEmpty(pool);
   await syncFragmentTokensFromEnvIfMissing(pool);
   await bootstrapSettings(pool);
   await ensureUserbotStarRefillsTable(pool);
+  await ensureUserMissionsTable(pool);
 }
 
 // ======================
