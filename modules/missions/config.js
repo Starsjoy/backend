@@ -10,11 +10,9 @@
  */
 
 const DEFAULTS = [
-  { level: 1, gift_id: "5170233102089322756", stars: 15, required: 5,  label: "Ayiqcha 🧸",  comment: "1-missiya: 5 do'st bonus sovg'asi 🎁" },
-  { level: 2, gift_id: "5168103777563050263", stars: 25, required: 7,  label: "Atirgul 🌹",  comment: "2-missiya: 7 do'st sovg'asi 🎁" },
-  { level: 3, gift_id: "5170144170496491616", stars: 50, required: 15, label: "Tort 🎂",     comment: "3-missiya: 15 do'st sovg'asi 🎂" },
-  { level: 4, gift_id: "5170314324215857265", stars: 50, required: 17, label: "Guldasta 💐", comment: "4-missiya: 17 do'st noyob sovg'asi 💐" },
-  { level: 5, gift_id: "6028601630662853006", stars: 50, required: 20, label: "Shampan 🍾",  comment: "5-missiya: 20 do'st premium sovg'asi 🍾" },
+  { level: 1, gift_id: "5170233102089322756", stars: 15, required: 5,  label: "Ayiqcha 🧸",       comment: "1-missiya: 5 do'st bonus sovg'asi 🎁" },
+  { level: 2, gift_id: "5168103777563050263", stars: 25, required: 7,  label: "Sovg'a 🎁",        comment: "2-missiya: 7 do'st sovg'asi 🎁" },
+  { level: 3, gift_id: "5800655655995968830", stars: 50, required: 15, label: "Maxsus stiker ✨", comment: "3-missiya: 15 do'st stiker sovg'asi ✨" },
 ];
 
 let cachedMissions = null;
@@ -48,4 +46,29 @@ export function getMissionVerifyMs() {
 export function resetMissionConfigCache() {
   cachedMissions = null;
   cachedVerifyMs = null;
+}
+
+/**
+ * Missiya gift'larini ilova sotadigan (userbot yubora oladigan) katalog bilan solishtiradi.
+ * Noma'lum gift claim paytida yetkazilmaydi — buni ishga tushishda ko'rish yaxshiroq.
+ *
+ * @param {Record<string, number>} giftStarsMap  gift_id → stars (server.js GIFT_STARS_MAP)
+ */
+export function validateMissionGifts(giftStarsMap = {}) {
+  const problems = [];
+  for (const m of getMissions()) {
+    const catalogStars = giftStarsMap[String(m.gift_id)];
+    if (catalogStars === undefined) {
+      problems.push(`missiya ${m.level}: gift ${m.gift_id} katalogda YO'Q — yetkazib bo'lmasligi mumkin`);
+    } else if (catalogStars !== m.stars) {
+      problems.push(`missiya ${m.level}: gift ${m.gift_id} narxi ${catalogStars}⭐, configda ${m.stars}⭐`);
+    }
+  }
+  if (problems.length) {
+    console.warn("⚠️ Missiya gift tekshiruvi:");
+    problems.forEach((p) => console.warn("   • " + p));
+  } else {
+    console.log("✅ Missiya gift'lari katalog bilan mos");
+  }
+  return problems;
 }

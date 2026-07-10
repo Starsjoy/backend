@@ -70,10 +70,16 @@ import {
 } from "./modules/userbotStarRefill/index.js";
 import {
   ensureUserMissionsTable,
+  getMissions,
   isChannelMember,
   registerMissionRoutes,
+  validateMissionGifts,
 } from "./modules/missions/index.js";
-import { sendOrdersChannelMessage } from "./modules/telegram/channelNotify.js";
+import { registerAnalyticsRoutes } from "./modules/analytics/index.js";
+import {
+  escapeTelegramHtml,
+  sendOrdersChannelMessage,
+} from "./modules/telegram/channelNotify.js";
 import {
   rejectForbiddenClientPriceFields,
   sendGuardFailure,
@@ -6933,9 +6939,39 @@ function formatNotificationQuantity(order, kind) {
   return `${n} stars`;
 }
 
+/**
+ * 🎯 Missiya bonus sovg'asi — xabar FAQAT xizmat kanaliga (ERROR_LOG_CHANNEL_ID) ketadi.
+ * Bu sotuv emas (summ = 0), shuning uchun ommaviy buyurtmalar kanalida ko'rinmasligi kerak.
+ */
+async function sendMissionGiftNotification(order, isFailed = false) {
+  if (!bot) return;
+
+  const mission = getMissions().find((m) => String(m.gift_id) === String(order.gift_id));
+  const recipient = String(order.recipient_username || order.recipient || "noma'lum").replace(/^@/, "");
+
+  const message =
+    `${isFailed ? "⚠️" : "🎯"} <b>Missiya sovg'asi${isFailed ? " — XATO" : ""}</b>\n\n` +
+    `📦 Order: #${order.id}\n` +
+    (mission ? `🏅 Missiya: ${mission.level}-daraja (${mission.required} do'st)\n` : "") +
+    `🎁 Gift: ${escapeTelegramHtml(mission?.label || String(order.gift_id))} (${order.type_amount}⭐)\n` +
+    `👤 @${escapeTelegramHtml(recipient)}\n` +
+    (isFailed ? "❌ Yetkazilmadi" : "✅ Yetkazildi");
+
+  try {
+    await bot.telegram.sendMessage(ERROR_LOG_CHANNEL_ID, message, { parse_mode: "HTML" });
+  } catch (err) {
+    console.error("❌ Missiya kanal xabari xatosi:", err.message);
+  }
+}
+
 // 📢 Unified kanal xabari
 async function sendUnifiedChannelNotification(order, type, isFailed = false) {
   if (!bot) return;
+
+  // Bonus missiya sovg'alari alohida formatda, alohida kanalga
+  if (String(order?.payment_method || "") === "bonus") {
+    return sendMissionGiftNotification(order, isFailed);
+  }
 
   const kind = resolveNotificationKind(order, type);
 
@@ -7410,6 +7446,9 @@ const missionCtx = {
 };
 
 registerMissionRoutes(app, missionCtx);
+validateMissionGifts(GIFT_STARS_MAP);
+
+registerAnalyticsRoutes(app, { pool, adminAuth });
 
 async function bootstrapAppData() {
   await ensureTokensTable(pool);
