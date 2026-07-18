@@ -5,7 +5,7 @@ import crypto from "crypto";
  */
 export async function upsertUserFromTelegram(
   pool,
-  { userId, fullName, username, language = "uz" }
+  { userId, fullName, username, language = "uz", languageSelected = false }
 ) {
   const uid = String(userId);
   let uname = String(username || `user_${uid}`)
@@ -24,8 +24,8 @@ export async function upsertUserFromTelegram(
   const referralCode = crypto.randomBytes(6).toString("hex");
 
   const result = await pool.query(
-    `INSERT INTO users (name, username, user_id, referral_code, referrer_user_id, language)
-     VALUES ($1, $2, $3, $4, NULL, $5)
+    `INSERT INTO users (name, username, user_id, referral_code, referrer_user_id, language, language_selected)
+     VALUES ($1, $2, $3, $4, NULL, $5, $6)
      ON CONFLICT (user_id) DO UPDATE SET
        name = EXCLUDED.name,
        username = CASE
@@ -36,9 +36,13 @@ export async function upsertUserFromTelegram(
          ) THEN EXCLUDED.username
          ELSE users.username
        END,
-       language = COALESCE(EXCLUDED.language, users.language)
+       language = CASE
+         WHEN EXCLUDED.language_selected THEN EXCLUDED.language
+         ELSE COALESCE(users.language, EXCLUDED.language)
+       END,
+       language_selected = users.language_selected OR EXCLUDED.language_selected
      RETURNING user_id, username, referral_code, (xmax = 0) AS inserted`,
-    [fullName, uname, uid, referralCode, language]
+    [fullName, uname, uid, referralCode, language, Boolean(languageSelected)]
   );
 
   const row = result.rows[0];

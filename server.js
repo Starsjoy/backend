@@ -43,6 +43,12 @@ import {
 } from "./modules/settings/index.js";
 import { upsertUserFromTelegram } from "./modules/users/upsertUser.js";
 import {
+  grandfatherExistingUserPreferences,
+  getUserPreferences,
+  setUserLanguage,
+  setOnboardingCompleted,
+} from "./modules/users/userPreferences.js";
+import {
   purchaseRobynStars,
   purchaseRobynPremium,
   purchaseRobynGift,
@@ -88,6 +94,11 @@ import {
   getExpiredOrderNotifyText,
   shouldSendExpiredOrderNotify,
 } from "./modules/notifications/orderExpiredMessages.js";
+import {
+  ensureReviewRequestTable,
+  scheduleReviewRequestAfterFirstPurchase,
+  runReviewRequestJob,
+} from "./modules/notifications/reviewRequest.js";
 dotenv.config();
 const { Pool } = pkg;
 const app = express();
@@ -1918,6 +1929,21 @@ setInterval(() => {
 }, STARS_REMINDER_INTERVAL_MS);
 
 // ======================
+// 📝 Sharh so'rovi — birinchi muvaffaqiyatli xariddan 5 daqiqa keyin (faqat 1 marta)
+// ======================
+const REVIEW_REQUEST_JOB_INTERVAL_MS = 60 * 1000;
+setTimeout(() => {
+  runReviewRequestJob(pool, bot).catch((e) =>
+    console.error("Sharh so'rovi (first run):", e)
+  );
+}, 45 * 1000);
+setInterval(() => {
+  runReviewRequestJob(pool, bot).catch((e) =>
+    console.error("Sharh so'rovi job:", e)
+  );
+}, REVIEW_REQUEST_JOB_INTERVAL_MS);
+
+// ======================
 // Jadval yaratish
 // ======================
 // 📦 UNIFIED ORDERS TABLE (yangi optimallashtirilgan jadval)
@@ -2006,9 +2032,19 @@ setInterval(() => {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS get_premium_at TEXT DEFAULT NULL`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS send_premium_message_at TEXT DEFAULT NULL`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_premium_months INTEGER DEFAULT NULL`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS language_selected BOOLEAN DEFAULT false`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT false`);
     console.log("✅ Table 'users' — qo'shimcha ustunlar tekshirildi (migration)");
   } catch (err) {
     console.error("⚠️ users migration:", err.message);
+  }
+})();
+(async () => {
+  try {
+    await ensureReviewRequestTable(pool);
+    console.log("✅ Table 'review_request_queue' ready");
+  } catch (err) {
+    console.error("⚠️ review_request_queue migration:", err.message);
   }
 })();
 (async () => {
@@ -4493,7 +4529,7 @@ app.get("/api/user/history/:userId", telegramAuth, async (req, res) => {
 // 1️⃣ Referral code bilan user ro'yxatdan o'tish yoki kirish
 app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) => {
   try {
-    const { username, referral_code, language } = req.body;
+    const { username, referral_code, language, language_selected } = req.body;
     // Telegram ma'lumotlarini olish
     const tgUser = req.telegramUser;
     const tgUserId = tgUser?.id ? String(tgUser.id) : null;
@@ -4519,6 +4555,7 @@ app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) =
       fullName: tgName,
       username: tgUsername,
       language: language || "uz",
+      languageSelected: Boolean(language_selected),
     });
 
     if (created) {
@@ -5586,32 +5623,95 @@ app.post("/api/referral/withdraw", authLimiter, telegramAuth, async (req, res) =
 app.post("/api/user/language", telegramAuth, async (req, res) => {
   try {
     const { username, language } = req.body;
-    if (!username || !language) {
-      return res.status(400).json({ error: "username va language kerak" });
+    const tgUserId = req.telegramUser?.id ? String(req.telegramUser.id) : null;
+    if (!language) {
+      return res.status(400).json({ error: "language kerak" });
     }
-    // Validate language
-    const validLanguages = ['uz', 'en', 'ru'];
+
+    const validLanguages = ["uz", "en", "ru"];
     if (!validLanguages.includes(language)) {
       return res.status(400).json({ error: "Notog'ri language" });
     }
-    const clean = username.startsWith("@") ? username.slice(1) : username;
-    // Update user language
-    const result = await pool.query(
-      `UPDATE users SET language = $1 WHERE username = $2 RETURNING *`,
-      [language, clean]
-    );
-    if (result.rows.length === 0) {
+
+    let result = null;
+    if (tgUserId) {
+      result = await setUserLanguage(pool, tgUserId, language);
+    }
+
+    if (!result && username) {
+      const clean = username.startsWith("@") ? username.slice(1) : username;
+      const r = await pool.query(
+        `UPDATE users SET language = $1, language_selected = true WHERE username = $2 RETURNING *`,
+        [language, clean]
+      );
+      result = r.rows[0] || null;
+    }
+
+    if (!result) {
       return res.status(404).json({ error: "User topilmadi" });
     }
-    console.log(`🌐 ${clean} language o'zgartirildi: ${language}`);
-    res.json({ success: true, user: result.rows[0] });
+
+    console.log(`🌐 Til saqlandi: ${result.username || tgUserId} → ${language}`);
+    res.json({
+      success: true,
+      language: result.language,
+      language_selected: Boolean(result.language_selected),
+    });
   } catch (err) {
     console.error("❌ /api/user/language ERROR:", err);
     res.status(500).json({ error: "Server xato" });
   }
 });
+// ======================
+// USER PREFERENCES
+// ======================
+app.get("/api/user/preferences", telegramAuth, async (req, res) => {
+  try {
+    const tgUserId = req.telegramUser?.id ? String(req.telegramUser.id) : null;
+    if (!tgUserId) {
+      return res.status(400).json({ error: "Telegram user_id kerak" });
+    }
+    const prefs = await getUserPreferences(pool, tgUserId);
+    res.json(prefs);
+  } catch (err) {
+    console.error("❌ /api/user/preferences GET:", err.message);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
+app.post("/api/user/onboarding-complete", telegramAuth, async (req, res) => {
+  try {
+    const tgUserId = req.telegramUser?.id ? String(req.telegramUser.id) : null;
+    if (!tgUserId) {
+      return res.status(400).json({ error: "Telegram user_id kerak" });
+    }
+
+    let row = await setOnboardingCompleted(pool, tgUserId);
+    if (!row) {
+      const tgUser = req.telegramUser;
+      const tgName = tgUser?.first_name
+        ? `${tgUser.first_name}${tgUser.last_name ? ` ${tgUser.last_name}` : ""}`
+        : null;
+      await upsertUserFromTelegram(pool, {
+        userId: tgUserId,
+        fullName: tgName,
+        username: tgUser?.username || `user_${tgUserId}`,
+      });
+      row = await setOnboardingCompleted(pool, tgUserId);
+    }
+
+    if (!row) {
+      return res.status(404).json({ error: "User topilmadi" });
+    }
+    res.json({ success: true, onboarding_completed: true });
+  } catch (err) {
+    console.error("❌ /api/user/onboarding-complete:", err.message);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
 // ===============================
-// 📢 CHANNEL NOTIFICATION
+// CHANNEL NOTIFICATION
 // ===============================
 async function sendChannelNotification(orderId, type) {
   try {
@@ -5670,6 +5770,10 @@ ${order.gift_comment ? `💬 Izoh: ${order.gift_comment}` : ''}
     });
     
     console.log(`📢 Kanalga xabar yuborildi: #${order.id} (${type})`);
+
+    scheduleReviewRequestAfterFirstPurchase(pool, order).catch((err) =>
+      console.error("❌ Sharh so'rovi rejalashtirish:", err.message)
+    );
   } catch (err) {
     console.error("❌ Channel notification error:", err);
   }
@@ -7017,6 +7121,12 @@ async function sendUnifiedChannelNotification(order, type, isFailed = false) {
   } catch (err) {
     console.error("❌ Channel notification error:", err.message);
   }
+
+  if (!isFailed) {
+    scheduleReviewRequestAfterFirstPurchase(pool, order).catch((err) =>
+      console.error("❌ Sharh so'rovi rejalashtirish:", err.message)
+    );
+  }
 }
 // 🎁 Referral bonus user_id orqali
 async function processReferralBonusByUserId(userId, stars, orderId) {
@@ -7455,6 +7565,7 @@ async function bootstrapAppData() {
   await seedFragmentTokensFromEnvIfEmpty(pool);
   await syncFragmentTokensFromEnvIfMissing(pool);
   await bootstrapSettings(pool);
+  await grandfatherExistingUserPreferences(pool);
   await ensureUserbotStarRefillsTable(pool);
   await ensureUserMissionsTable(pool);
 }

@@ -12,7 +12,7 @@ export const SETTING_KEYS = {
 
 const DEFAULTS = {
   [SETTING_KEYS.MAINTENANCE]: "false",
-  [SETTING_KEYS.STARS_PURCHASE_MODE]: "paymee",
+  [SETTING_KEYS.STARS_PURCHASE_MODE]: "fragment",
   [SETTING_KEYS.FRAGMENT_PAYMENT_METHOD]: "ton",
   [SETTING_KEYS.USERBOT_AUTO_REFILL]: "true",
 };
@@ -57,10 +57,10 @@ export async function setSetting(pool, key, value) {
 }
 
 export function normalizeStarsPurchaseMode(mode) {
-  const m = String(mode || "paymee").trim().toLowerCase();
-  if (m === "fragment") return "fragment";
-  if (m === "robynhood") return "robynhood";
-  return "paymee";
+  const m = String(mode || "fragment").trim().toLowerCase();
+  if (m === "paymee") return "paymee";
+  if (m === "fragment" || m === "robynhood") return "fragment";
+  return "fragment";
 }
 
 export function normalizeFragmentPaymentMethod(method) {
@@ -124,14 +124,10 @@ export async function loadSettings(pool, force = false) {
 
 export function toPublicAppConfig(settings) {
   const mode = settings.stars_purchase_mode;
-  const fragment = mode === "fragment";
   const paymee = mode === "paymee";
   let starsPath = "/stars";
   let premiumPath = "/premium";
-  if (fragment) {
-    starsPath = "/usdtstars";
-    premiumPath = "/usdtpremium";
-  } else if (paymee) {
+  if (paymee) {
     starsPath = "/paymeestars";
     premiumPath = "/paymeepremium";
   }
@@ -195,7 +191,7 @@ export async function seedSettingsFromEnvIfMissing(pool) {
   let seeded = 0;
 
   if ((await getSettingRaw(pool, SETTING_KEYS.STARS_PURCHASE_MODE)) == null) {
-    const envMode = String(process.env.STARS_PURCHASE_MODE || "paymee")
+    const envMode = String(process.env.STARS_PURCHASE_MODE || "fragment")
       .trim()
       .toLowerCase();
     const mode = normalizeStarsPurchaseMode(envMode);
@@ -234,7 +230,7 @@ export function getCachedSettings() {
   if (!cache) {
     return {
       maintenance: false,
-      stars_purchase_mode: "paymee",
+      stars_purchase_mode: "fragment",
       fragment_payment_method: "ton",
       userbot_auto_refill_enabled: true,
     };

@@ -59,8 +59,8 @@ export function registerSettingsRoutes(app, ctx) {
   app.post("/api/admin/stars-purchase-mode", adminAuth, async (req, res) => {
     try {
       const mode = req.body?.mode;
-      if (mode !== "robynhood" && mode !== "fragment" && mode !== "paymee") {
-        return res.status(400).json({ error: "mode: robynhood | fragment | paymee" });
+      if (mode !== "fragment" && mode !== "paymee") {
+        return res.status(400).json({ error: "mode: fragment | paymee" });
       }
       const settings = await setStarsPurchaseMode(pool, mode);
       console.log(`💎 stars_purchase_mode → ${settings.stars_purchase_mode}`);
