@@ -1,7 +1,7 @@
 /**
  * Do'stlarni Telegram kanalida qayta tekshirish.
  *
- * 24 soatlik oyna tugaganda va claim paytida chaqiriladi: kanaldan chiqib ketgan
+ * 4 soatlik oyna davomida va claim paytida chaqiriladi: kanaldan chiqib ketgan
  * do'stlar `subscribe_user = false` bo'ladi va missiya progressidan tushadi.
  *
  * ⚠️ Bot kanalda ADMIN bo'lishi shart, aks holda getChatMember ishlamaydi.

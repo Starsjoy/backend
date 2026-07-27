@@ -61,12 +61,20 @@ export async function setBaselineIfEmpty(pool, userId, level, friends) {
   return r.rows[0];
 }
 
-/** Do'stlar to'ldi — 24 soatlik timer boshlanadi. */
+/** Do'stlar to'ldi — tekshiruv oynasi (4 soat) boshlanadi. */
 export async function startVerifyTimer(pool, userId, level) {
   const r = await pool.query(
     `UPDATE user_missions SET completed_at = NOW()
      WHERE user_id = $1 AND mission_level = $2 AND completed_at IS NULL AND claimed = false
      RETURNING *`,
+    [userId, level]
+  );
+  return r.rows[0] || null;
+}
+
+export async function fetchMissionRow(pool, userId, level) {
+  const r = await pool.query(
+    `SELECT * FROM user_missions WHERE user_id = $1 AND mission_level = $2`,
     [userId, level]
   );
   return r.rows[0] || null;

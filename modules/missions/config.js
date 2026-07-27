@@ -33,13 +33,17 @@ export function getMissionByLevel(level) {
   return getMissions().find((m) => m.level === level) || null;
 }
 
-/** Do'stlar kanalda turishi kerak bo'lgan oyna. Test uchun MISSION_VERIFY_HOURS=0.01 qo'ying. */
+/** Do'stlar kanalda turishi kerak bo'lgan oyna (soat). Test: MISSION_VERIFY_HOURS=0.01 */
 export function getMissionVerifyMs() {
   if (cachedVerifyMs === null) {
-    const hours = Number(process.env.MISSION_VERIFY_HOURS ?? 24);
-    cachedVerifyMs = Math.max(0, Number.isFinite(hours) ? hours : 24) * 60 * 60 * 1000;
+    const hours = Number(process.env.MISSION_VERIFY_HOURS ?? 4);
+    cachedVerifyMs = Math.max(0, Number.isFinite(hours) ? hours : 4) * 60 * 60 * 1000;
   }
   return cachedVerifyMs;
+}
+
+export function getMissionVerifyHours() {
+  return getMissionVerifyMs() / (60 * 60 * 1000);
 }
 
 /** Faqat testlar uchun — env o'zgartirilgach keshni tozalash. */

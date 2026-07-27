@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { getMissionByLevel, getMissions, getMissionVerifyMs } from "./config.js";
+import { getMissionByLevel, getMissions, getMissionVerifyMs, getMissionVerifyHours } from "./config.js";
 import { verifyMissionFriends } from "./verify.js";
 import {
   attachOrder,
@@ -11,6 +11,7 @@ import {
   revertClaim,
   setBaselineIfEmpty,
   startVerifyTimer,
+  fetchMissionRow,
 } from "./db.js";
 
 const clamp = (n, min, max) => Math.min(Math.max(n, min), max);
@@ -29,13 +30,11 @@ export async function refreshMissionState(ctx, userId, { forceVerify = false } =
 
   const activeLevel = MISSIONS.find((m) => !byLevel.get(m.level)?.claimed)?.level ?? null;
 
-  // 24 soatlik oyna tugagan bo'lsa (yoki claim paytida) do'stlarni qayta tekshiramiz
+  // Kutish oynasi (completed_at) davomida va claim paytida: kanaldan chiqqan do'stlarni DB dan tushiramiz
   if (activeLevel !== null) {
     const row = byLevel.get(activeLevel);
-    const windowOver =
-      row?.completed_at &&
-      Date.now() - new Date(row.completed_at).getTime() >= verifyMs;
-    if (forceVerify || windowOver) {
+    const pendingVerify = row?.completed_at && !row?.claimed;
+    if (forceVerify || pendingVerify) {
       await verifyMissionFriends(ctx, userId);
     }
   }
@@ -65,14 +64,19 @@ export async function refreshMissionState(ctx, userId, { forceVerify = false } =
 
     if (isActive && baseline !== null) {
       if (progress >= m.required && !completedAt) {
-        // Do'stlar to'ldi → timer start. Keyingi missiya hisoblagichi shu zahoti
-        // ishlay boshlashi uchun uning baseline'i hozirgi sondan o'rnatiladi.
         const updated = await startVerifyTimer(pool, userId, m.level);
         if (updated) {
           completedAt = new Date(updated.completed_at);
+          byLevel.set(m.level, updated);
           const next = getMissionByLevel(m.level + 1);
           if (next) {
             byLevel.set(next.level, await setBaselineIfEmpty(pool, userId, next.level, friends));
+          }
+        } else {
+          const fresh = await fetchMissionRow(pool, userId, m.level);
+          if (fresh?.completed_at) {
+            completedAt = new Date(fresh.completed_at);
+            byLevel.set(m.level, fresh);
           }
         }
       } else if (progress < m.required && completedAt) {
@@ -149,6 +153,7 @@ export function registerMissionRoutes(app, ctx) {
         active_level: state.activeLevel,
         all_claimed: state.allClaimed,
         current_friends: state.friends,
+        verify_hours: getMissionVerifyHours(),
         username: telegramUsername(req) || null,
         missions: state.missions,
       });

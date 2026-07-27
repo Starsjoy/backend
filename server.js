@@ -2403,7 +2403,15 @@ app.get("/api/stars/price/:stars", async (req, res) => {
 // ======================
 app.get("/api/transactions/all", adminAuth, async (req, res) => {
   try {
-    const result = await pool.query(`
+    const hasPagination =
+      req.query.limit !== undefined || req.query.offset !== undefined;
+    const limit = Math.max(
+      1,
+      Math.min(500, parseInt(req.query.limit, 10) || 50)
+    );
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
+    let query = `
       SELECT 
         o.id,
         o.order_id,
@@ -2422,8 +2430,15 @@ app.get("/api/transactions/all", adminAuth, async (req, res) => {
       LEFT JOIN users u ON o.owner_user_id = u.user_id
       WHERE o.order_type IN ('stars', 'stars_usdt', 'stars_paymee')
       ORDER BY o.id DESC
-    `);
-    
+    `;
+    const params = [];
+    if (hasPagination) {
+      params.push(limit, offset);
+      query += ` LIMIT $1 OFFSET $2`;
+    }
+
+    const result = await pool.query(query, params);
+
     // Status mapping: completed → stars_sent
     const mapped = result.rows.map(row => ({
       ...row,
@@ -2435,8 +2450,41 @@ app.get("/api/transactions/all", adminAuth, async (req, res) => {
             ? 'paymee'
             : 'robynhood',
     }));
-    
-    res.json(mapped);
+
+    if (!hasPagination) {
+      return res.json(mapped);
+    }
+
+    // Stats + total (bir marotaba, sekundlarni tejaydi)
+    const statsRes = await pool.query(`
+      SELECT status,
+             COUNT(*)::int AS cnt,
+             COALESCE(SUM(type_amount),0)::bigint AS total_stars
+      FROM orders
+      WHERE order_type IN ('stars', 'stars_usdt', 'stars_paymee')
+      GROUP BY status
+    `);
+    const stats = {
+      totalStars: 0,
+      completed: 0,
+      expired: 0,
+      pending: 0,
+      stars_sent: 0,
+      failed: 0,
+      error: 0,
+    };
+    let total = 0;
+    statsRes.rows.forEach((r) => {
+      const cnt = Number(r.cnt) || 0;
+      total += cnt;
+      stats.totalStars += Number(r.total_stars) || 0;
+      const mappedStatus = r.status === 'completed' ? 'stars_sent' : r.status;
+      if (Object.prototype.hasOwnProperty.call(stats, mappedStatus)) {
+        stats[mappedStatus] += cnt;
+      }
+    });
+
+    res.json({ items: mapped, total, stats, limit, offset });
   } catch (err) {
     console.error("❌ /api/transactions/all ERROR:", err);
     res.status(500).json({ error: "Server error" });
@@ -2447,13 +2495,20 @@ app.get("/api/transactions/all", adminAuth, async (req, res) => {
 // ======================
 app.get("/api/transactions/status/:status", adminAuth, async (req, res) => {
   let { status } = req.params;
-  
+
   // Legacy status mapping: frontend "stars_sent" yuborsa, DB da "completed" qidiramiz
   const dbStatus = status === 'stars_sent' ? 'completed' : status;
-  
+  const hasPagination =
+    req.query.limit !== undefined || req.query.offset !== undefined;
+  const limit = Math.max(
+    1,
+    Math.min(500, parseInt(req.query.limit, 10) || 50)
+  );
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
   try {
-    const result = await pool.query(
-      `SELECT 
+    const params = [dbStatus];
+    let query = `SELECT 
         o.id,
         o.order_id,
         o.owner_user_id,
@@ -2470,10 +2525,13 @@ app.get("/api/transactions/status/:status", adminAuth, async (req, res) => {
       FROM orders o
       LEFT JOIN users u ON o.owner_user_id = u.user_id
       WHERE o.status = $1 AND o.order_type IN ('stars', 'stars_usdt', 'stars_paymee')
-      ORDER BY o.id DESC`,
-      [dbStatus]
-    );
-    
+      ORDER BY o.id DESC`;
+    if (hasPagination) {
+      params.push(limit, offset);
+      query += ` LIMIT $2 OFFSET $3`;
+    }
+    const result = await pool.query(query, params);
+
     // Status mapping: completed → stars_sent
     const mapped = result.rows.map(row => ({
       ...row,
@@ -2485,8 +2543,46 @@ app.get("/api/transactions/status/:status", adminAuth, async (req, res) => {
             ? 'paymee'
             : 'robynhood',
     }));
-    
-    res.json(mapped);
+
+    if (!hasPagination) {
+      return res.json(mapped);
+    }
+
+    // Stats + total (barcha statuslar bo'yicha, filterdan qat'iy nazar)
+    const statsRes = await pool.query(`
+      SELECT status,
+             COUNT(*)::int AS cnt,
+             COALESCE(SUM(type_amount),0)::bigint AS total_stars
+      FROM orders
+      WHERE order_type IN ('stars', 'stars_usdt', 'stars_paymee')
+      GROUP BY status
+    `);
+    const stats = {
+      totalStars: 0,
+      completed: 0,
+      expired: 0,
+      pending: 0,
+      stars_sent: 0,
+      failed: 0,
+      error: 0,
+    };
+    statsRes.rows.forEach((r) => {
+      const cnt = Number(r.cnt) || 0;
+      stats.totalStars += Number(r.total_stars) || 0;
+      const mappedStatus = r.status === 'completed' ? 'stars_sent' : r.status;
+      if (Object.prototype.hasOwnProperty.call(stats, mappedStatus)) {
+        stats[mappedStatus] += cnt;
+      }
+    });
+    // Filter uchun total — faqat shu status
+    const totalRes = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM orders
+       WHERE status = $1 AND order_type IN ('stars', 'stars_usdt', 'stars_paymee')`,
+      [dbStatus]
+    );
+    const total = totalRes.rows[0]?.c || 0;
+
+    res.json({ items: mapped, total, stats, limit, offset });
   } catch (err) {
     console.error("❌ /api/transactions/status ERROR:", err);
     res.status(500).json({ error: "Server error" });
@@ -3961,6 +4057,27 @@ app.get("/api/premium/transactions/:id", telegramAuth, async (req, res) => {
 app.get("/api/admin/premium/list", adminAuth, async (req, res) => {
   try {
     const { status, search } = req.query;
+    const hasPagination =
+      req.query.limit !== undefined || req.query.offset !== undefined;
+    const limit = Math.max(
+      1,
+      Math.min(500, parseInt(req.query.limit, 10) || 50)
+    );
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
+    let whereSql = ` WHERE o.order_type IN ('premium', 'premium_usdt', 'premium_paymee')`;
+    const params = [];
+    if (status && status !== "all") {
+      const dbStatus = status === 'premium_sent' ? 'completed' : status;
+      params.push(dbStatus);
+      whereSql += ` AND o.status = $${params.length}`;
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      params.push(`%${search}%`);
+      whereSql += ` AND (o.recipient_username ILIKE $${params.length - 1} OR o.recipient ILIKE $${params.length})`;
+    }
+
     let query = `
       SELECT 
         o.id, o.order_id, o.owner_user_id, 
@@ -3974,23 +4091,15 @@ app.get("/api/admin/premium/list", adminAuth, async (req, res) => {
         o.created_at
       FROM orders o
       LEFT JOIN users u ON o.owner_user_id = u.user_id
-      WHERE o.order_type IN ('premium', 'premium_usdt', 'premium_paymee')
+      ${whereSql}
+      ORDER BY o.id DESC
     `;
-    const params = [];
-    // filter: status (premium_sent → completed mapping)
-    if (status && status !== "all") {
-      const dbStatus = status === 'premium_sent' ? 'completed' : status;
-      params.push(dbStatus);
-      query += ` AND o.status = $${params.length}`;
+    const listParams = params.slice();
+    if (hasPagination) {
+      listParams.push(limit, offset);
+      query += ` LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`;
     }
-    // filter: search (recipient_username, recipient)
-    if (search) {
-      params.push(`%${search}%`);
-      params.push(`%${search}%`);
-      query += ` AND (o.recipient_username ILIKE $${params.length - 1} OR o.recipient ILIKE $${params.length})`;
-    }
-    query += " ORDER BY o.id DESC";
-    const result = await pool.query(query, params);
+    const result = await pool.query(query, listParams);
     
     // Status mapping: completed → premium_sent (frontend uchun)
     const mapped = result.rows.map(row => ({
@@ -4003,8 +4112,42 @@ app.get("/api/admin/premium/list", adminAuth, async (req, res) => {
             ? 'paymee'
             : 'robynhood',
     }));
-    
-    res.json({ success: true, orders: mapped });
+
+    if (!hasPagination) {
+      return res.json({ success: true, orders: mapped });
+    }
+
+    // Stats — barcha premium buyurtmalar bo'yicha (filterdan qat'iy nazar)
+    const statsRes = await pool.query(`
+      SELECT status, COUNT(*)::int AS cnt
+      FROM orders
+      WHERE order_type IN ('premium', 'premium_usdt', 'premium_paymee')
+      GROUP BY status
+    `);
+    const stats = {
+      total: 0,
+      pending: 0,
+      delivered: 0,
+      expired: 0,
+      failed: 0,
+    };
+    statsRes.rows.forEach((r) => {
+      const cnt = Number(r.cnt) || 0;
+      stats.total += cnt;
+      if (r.status === 'pending') stats.pending += cnt;
+      else if (r.status === 'completed' || r.status === 'delivered') stats.delivered += cnt;
+      else if (r.status === 'expired') stats.expired += cnt;
+      else if (r.status === 'failed' || r.status === 'error') stats.failed += cnt;
+    });
+
+    // Filter uchun total
+    const totalRes = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM orders o ${whereSql}`,
+      params
+    );
+    const total = totalRes.rows[0]?.c || 0;
+
+    res.json({ success: true, orders: mapped, total, stats, limit, offset });
   } catch (err) {
     console.error("❌ /api/admin/premium/list ERROR:", err);
     res.status(500).json({ error: "Server xatosi" });
@@ -4191,8 +4334,59 @@ app.post("/api/admin/premium/manual", adminAuth, async (req, res) => {
 // ===============================
 app.get("/api/admin/users", adminAuth, async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM users ORDER BY id DESC");
-    res.json(result.rows);
+    const hasPagination =
+      req.query.limit !== undefined || req.query.offset !== undefined;
+    const limit = Math.max(
+      1,
+      Math.min(500, parseInt(req.query.limit, 10) || 50)
+    );
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    const searchRaw = (req.query.search || "").trim();
+
+    const params = [];
+    let whereSql = "";
+    if (searchRaw) {
+      params.push(`%${searchRaw}%`);
+      params.push(`%${searchRaw}%`);
+      whereSql = ` WHERE username ILIKE $1 OR referral_code ILIKE $2`;
+    }
+
+    let query = `SELECT * FROM users${whereSql} ORDER BY id DESC`;
+    const listParams = params.slice();
+    if (hasPagination) {
+      listParams.push(limit, offset);
+      query += ` LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`;
+    }
+    const result = await pool.query(query, listParams);
+
+    if (!hasPagination) {
+      // Legacy: whole list qaytariladi (eski frontendlar uchun)
+      return res.json(result.rows);
+    }
+
+    // Stats — barcha userlar bo'yicha
+    const statsRes = await pool.query(`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE created_at::date = CURRENT_DATE)::int AS today,
+        COALESCE(SUM(total_referrals), 0)::bigint AS total_referrals
+      FROM users
+    `);
+    const s = statsRes.rows[0] || {};
+    const stats = {
+      total: Number(s.total) || 0,
+      today: Number(s.today) || 0,
+      totalReferrals: Number(s.total_referrals) || 0,
+    };
+
+    // Filter uchun total
+    const totalRes = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM users${whereSql}`,
+      params
+    );
+    const total = totalRes.rows[0]?.c || 0;
+
+    res.json({ users: result.rows, total, stats, limit, offset });
   } catch (err) {
     console.error("❌ /api/admin/users ERROR:", err);
     res.status(500).json({ error: "Server xatosi" });
@@ -5793,7 +5987,7 @@ const ALLOWED_GIFT_IDS = [
   "5170690322832818290",
   "5170521118301225164",
 ];
-const GIFT_PRICE_MAP = { 15: 4500, 25: 6000, 50: 12000, 100: 24000 };
+const GIFT_PRICE_MAP = { 15: 5000, 25: 7000, 50: 13000, 100: 24000 };
 const GIFT_STARS_MAP = {
   "5170145012310081615": 15, "5170233102089322756": 15,
   "5170250947678437525": 25, "5168103777563050263": 25,
@@ -6310,6 +6504,27 @@ async function sendGiftToUser(order) {
 app.get("/api/admin/gift/list", adminAuth, async (req, res) => {
   try {
     const { status, search } = req.query;
+    const hasPagination =
+      req.query.limit !== undefined || req.query.offset !== undefined;
+    const limit = Math.max(
+      1,
+      Math.min(500, parseInt(req.query.limit, 10) || 50)
+    );
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
+    let whereSql = ` WHERE o.order_type='gift'`;
+    const params = [];
+    if (status && status !== "all") {
+      const dbStatus = status === 'gift_sent' ? 'completed' : status;
+      params.push(dbStatus);
+      whereSql += ` AND o.status = $${params.length}`;
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      params.push(`%${search}%`);
+      whereSql += ` AND (o.owner_user_id::text ILIKE $${params.length - 1} OR o.recipient_username ILIKE $${params.length})`;
+    }
+
     let query = `
       SELECT 
         o.id, o.order_id, o.owner_user_id, 
@@ -6325,30 +6540,57 @@ app.get("/api/admin/gift/list", adminAuth, async (req, res) => {
         o.created_at
       FROM orders o
       LEFT JOIN users u ON u.user_id = o.owner_user_id
-      WHERE o.order_type='gift'
+      ${whereSql}
+      ORDER BY o.id DESC
     `;
-    const params = [];
-    // filter: status (gift_sent → completed mapping)
-    if (status && status !== "all") {
-      const dbStatus = status === 'gift_sent' ? 'completed' : status;
-      params.push(dbStatus);
-      query += ` AND o.status = $${params.length}`;
+    const listParams = params.slice();
+    if (hasPagination) {
+      listParams.push(limit, offset);
+      query += ` LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`;
     }
-    if (search) {
-      params.push(`%${search}%`);
-      params.push(`%${search}%`);
-      query += ` AND (o.owner_user_id::text ILIKE $${params.length - 1} OR o.recipient_username ILIKE $${params.length})`;
-    }
-    query += " ORDER BY o.id DESC";
-    const result = await pool.query(query, params);
+    const result = await pool.query(query, listParams);
     
-    // Status mapping: completed → gift_sent (frontend uchun)
     const mapped = result.rows.map(row => ({
       ...row,
       status: row.status === 'completed' ? 'gift_sent' : row.status
     }));
-    
-    res.json({ success: true, orders: mapped });
+
+    if (!hasPagination) {
+      return res.json({ success: true, orders: mapped });
+    }
+
+    // Stats — barcha gift buyurtmalar
+    const statsRes = await pool.query(`
+      SELECT status, COUNT(*)::int AS cnt
+      FROM orders
+      WHERE order_type='gift'
+      GROUP BY status
+    `);
+    const stats = {
+      total: 0,
+      pending: 0,
+      completed: 0,
+      gift_sent: 0,
+      expired: 0,
+      failed: 0,
+    };
+    statsRes.rows.forEach((r) => {
+      const cnt = Number(r.cnt) || 0;
+      stats.total += cnt;
+      if (r.status === 'pending') stats.pending += cnt;
+      else if (r.status === 'completed') stats.gift_sent += cnt; // completed → gift_sent
+      else if (r.status === 'gift_sent') stats.gift_sent += cnt;
+      else if (r.status === 'expired') stats.expired += cnt;
+      else if (r.status === 'failed' || r.status === 'error') stats.failed += cnt;
+    });
+
+    const totalRes = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM orders o ${whereSql}`,
+      params
+    );
+    const total = totalRes.rows[0]?.c || 0;
+
+    res.json({ success: true, orders: mapped, total, stats, limit, offset });
   } catch (err) {
     console.error("❌ /api/admin/gift/list ERROR:", err);
     res.status(500).json({ error: "Server xatosi" });
