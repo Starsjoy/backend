@@ -141,9 +141,88 @@ async function bonusStats(pool) {
   };
 }
 
+const STARS_TYPES = ["stars", "stars_usdt", "stars_paymee"];
+const PREMIUM_TYPES = ["premium", "premium_usdt", "premium_paymee"];
+
+/** Period → boshlanish vaqti ifodasi (BOUNDS bilan bir xil idioma). 'all' = chegarasiz. */
+const PERIOD_START_SQL = `
+  CASE $1::text
+    WHEN 'day'   THEN date_trunc('day',   ${NOW_TK})
+    WHEN 'week'  THEN ${NOW_TK} - INTERVAL '7 days'
+    WHEN 'month' THEN date_trunc('month', ${NOW_TK})
+    ELSE NULL
+  END
+`;
+
+/**
+ * Savdo statistikasi (stars/premium/gift), bitta SQL so'rovda agregatsiya qilinadi —
+ * frontend butun `orders` jadvalini tortib, JS'da hisoblamaydi.
+ * Bonus missiya sovg'alari (payment_method='bonus', summ=0) savdo emas — chetlab o'tiladi,
+ * ular alohida bonusStats() da hisoblanadi.
+ */
+async function salesStats(pool, period) {
+  const r = await pool.query(
+    `WITH bounds AS (SELECT ${PERIOD_START_SQL} AS start_at)
+     SELECT
+       COUNT(*) FILTER (WHERE order_type = ANY($2::text[]))::int                                    AS stars_count,
+       COALESCE(SUM(type_amount) FILTER (WHERE order_type = ANY($2::text[])), 0)::bigint             AS stars_total_stars,
+       COALESCE(SUM(summ) FILTER (WHERE order_type = ANY($2::text[])), 0)::bigint                    AS stars_total_amount,
+       COUNT(*) FILTER (WHERE order_type = ANY($3::text[]))::int                                     AS premium_count,
+       COALESCE(SUM(summ) FILTER (WHERE order_type = ANY($3::text[])), 0)::bigint                    AS premium_total_amount,
+       COUNT(*) FILTER (WHERE order_type = 'gift')::int                                              AS gift_count,
+       COALESCE(SUM(type_amount) FILTER (WHERE order_type = 'gift'), 0)::bigint                      AS gift_total_stars,
+       COALESCE(SUM(summ) FILTER (WHERE order_type = 'gift'), 0)::bigint                             AS gift_total_amount
+     FROM orders o CROSS JOIN bounds b
+     WHERE o.status = 'completed'
+       AND o.payment_method IS DISTINCT FROM 'bonus'
+       AND (b.start_at IS NULL OR o.created_at >= b.start_at)`,
+    [period, STARS_TYPES, PREMIUM_TYPES]
+  );
+  const x = r.rows[0];
+  const stars = { count: x.stars_count, totalStars: Number(x.stars_total_stars), totalAmount: Number(x.stars_total_amount) };
+  const premium = { count: x.premium_count, totalAmount: Number(x.premium_total_amount) };
+  const gift = { count: x.gift_count, totalStars: Number(x.gift_total_stars), totalAmount: Number(x.gift_total_amount) };
+  return {
+    stars,
+    premium,
+    gift,
+    total: {
+      count: stars.count + premium.count + gift.count,
+      totalAmount: stars.totalAmount + premium.totalAmount + gift.totalAmount,
+    },
+  };
+}
+
+/** Kunlik savdo (oxirgi N kun, bo'sh kunlar 0 bilan) — period'dan mustaqil, doim so'nggi kunlar. */
+async function salesDaily(pool, days) {
+  const r = await pool.query(
+    `WITH series AS (
+       SELECT generate_series(
+         date_trunc('day', ${NOW_TK}) - ($1::int - 1) * INTERVAL '1 day',
+         date_trunc('day', ${NOW_TK}),
+         INTERVAL '1 day'
+       ) AS d
+     )
+     SELECT to_char(s.d, 'YYYY-MM-DD') AS date,
+            COUNT(o.id)::int AS count,
+            COALESCE(SUM(o.summ), 0)::bigint AS amount
+     FROM series s
+     LEFT JOIN orders o
+       ON o.created_at >= s.d AND o.created_at < s.d + INTERVAL '1 day'
+       AND o.status = 'completed'
+       AND o.payment_method IS DISTINCT FROM 'bonus'
+       AND o.order_type IN ('stars','stars_usdt','stars_paymee','premium','premium_usdt','premium_paymee','gift')
+     GROUP BY s.d
+     ORDER BY s.d`,
+    [days]
+  );
+  return r.rows.map((row) => ({ date: row.date, count: row.count, amount: Number(row.amount) }));
+}
+
 export function registerAnalyticsRoutes(app, { pool, adminAuth }) {
   // ======================
   // 📊 GET /api/admin/analytics/overview?days=30
+  // Foydalanuvchi o'sishi + bonus missiya statistikasi (yengil, agregatsiya SQL'da).
   // ======================
   app.get("/api/admin/analytics/overview", adminAuth, async (req, res) => {
     try {
@@ -158,6 +237,30 @@ export function registerAnalyticsRoutes(app, { pool, adminAuth }) {
       res.json({ success: true, ...counts, daily, bonus });
     } catch (err) {
       console.error("❌ /api/admin/analytics/overview error:", err);
+      res.status(500).json({ error: "Server xato" });
+    }
+  });
+
+  // ======================
+  // 💰 GET /api/admin/analytics/sales?period=day|week|month|all&days=30
+  // Stars/Premium/Gift savdo statistikasi — og'ir, shuning uchun faqat admin
+  // "Savdo statistikasi" tugmasini bosganda chaqiriladi (frontend tomonida).
+  // ======================
+  app.get("/api/admin/analytics/sales", adminAuth, async (req, res) => {
+    try {
+      const period = ["day", "week", "month", "all"].includes(req.query.period)
+        ? req.query.period
+        : "all";
+      const days = Math.min(Math.max(Number(req.query.days) || 30, 7), 90);
+
+      const [sales, daily] = await Promise.all([
+        salesStats(pool, period),
+        salesDaily(pool, days),
+      ]);
+
+      res.json({ success: true, period, ...sales, daily });
+    } catch (err) {
+      console.error("❌ /api/admin/analytics/sales error:", err);
       res.status(500).json({ error: "Server xato" });
     }
   });

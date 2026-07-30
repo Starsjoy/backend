@@ -47,6 +47,7 @@ import {
   getUserPreferences,
   setUserLanguage,
   setOnboardingCompleted,
+  setBonusAdShown,
 } from "./modules/users/userPreferences.js";
 import {
   purchaseRobynStars,
@@ -2034,6 +2035,7 @@ setInterval(() => {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_premium_months INTEGER DEFAULT NULL`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS language_selected BOOLEAN DEFAULT false`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT false`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bonus_ad_shown BOOLEAN DEFAULT false`);
     console.log("✅ Table 'users' — qo'shimcha ustunlar tekshirildi (migration)");
   } catch (err) {
     console.error("⚠️ users migration:", err.message);
@@ -4332,6 +4334,13 @@ app.post("/api/admin/premium/manual", adminAuth, async (req, res) => {
 // ===============================
 // 👤 ADMIN — GET ALL USERS
 // ===============================
+// ⚡ Arzon auth-tekshiruv: admin panel ochilganda DB'ga tegmasdan sessiyani tasdiqlaydi.
+// /api/admin/users'ni probe sifatida ishlatish (parametrsiz — butun jadvalni qaytarardi)
+// panelni ochishda qotishning asosiy sababi edi.
+app.get("/api/admin/ping", adminAuth, (req, res) => {
+  res.json({ success: true });
+});
+
 app.get("/api/admin/users", adminAuth, async (req, res) => {
   try {
     const hasPagination =
@@ -4340,6 +4349,9 @@ app.get("/api/admin/users", adminAuth, async (req, res) => {
       1,
       Math.min(500, parseInt(req.query.limit, 10) || 50)
     );
+    // Parametrsiz (legacy) chaqiruvda ham cheksiz SELECT * qilinmaydi —
+    // faqat oxirgi 1000 ta qaytadi, DB butunlay skanerlanmaydi.
+    const LEGACY_CAP = 1000;
     const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
     const searchRaw = (req.query.search || "").trim();
 
@@ -4353,14 +4365,12 @@ app.get("/api/admin/users", adminAuth, async (req, res) => {
 
     let query = `SELECT * FROM users${whereSql} ORDER BY id DESC`;
     const listParams = params.slice();
-    if (hasPagination) {
-      listParams.push(limit, offset);
-      query += ` LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`;
-    }
+    listParams.push(hasPagination ? limit : LEGACY_CAP, offset);
+    query += ` LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`;
     const result = await pool.query(query, listParams);
 
     if (!hasPagination) {
-      // Legacy: whole list qaytariladi (eski frontendlar uchun)
+      // Legacy: bare array qaytariladi (eski frontendlar uchun)
       return res.json(result.rows);
     }
 
@@ -5336,23 +5346,58 @@ app.post("/api/validate-discount-price", async (req, res) => {
 // ======================
 
 // GET pending referral requests for admin
+// ⚡ Yengil hisoblagich — badge/filter tugmalari uchun. To'liq ro'yxatni tortmaydi.
+app.get("/api/admin/referral-requests/counts", adminAuth, async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE is_accepted = false AND rejected_at IS NULL)::int AS pending,
+        COUNT(*) FILTER (WHERE is_accepted = true)::int                          AS accepted,
+        COUNT(*) FILTER (WHERE rejected_at IS NOT NULL)::int                     AS rejected,
+        COUNT(*)::int                                                            AS total
+      FROM referral_requests
+    `);
+    res.json({ success: true, ...r.rows[0] });
+  } catch (err) {
+    console.error("❌ GET referral-requests/counts ERROR:", err);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
 app.get("/api/admin/referral-requests", adminAuth, async (req, res) => {
   try {
     const { filter } = req.query; // pending, accepted, rejected, all
-    let query = "SELECT * FROM referral_requests";
-    
+    const hasPagination =
+      req.query.limit !== undefined || req.query.offset !== undefined;
+    const limit = Math.max(1, Math.min(500, parseInt(req.query.limit, 10) || 50));
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
+    let whereSql = "";
     if (filter === "pending") {
-      query += " WHERE is_accepted = false AND rejected_at IS NULL";
+      whereSql = " WHERE is_accepted = false AND rejected_at IS NULL";
     } else if (filter === "accepted") {
-      query += " WHERE is_accepted = true";
+      whereSql = " WHERE is_accepted = true";
     } else if (filter === "rejected") {
-      query += " WHERE rejected_at IS NOT NULL";
+      whereSql = " WHERE rejected_at IS NOT NULL";
     }
-    
-    query += " ORDER BY created_at DESC";
-    
-    const result = await pool.query(query);
-    res.json(result.rows);
+
+    let query = `SELECT * FROM referral_requests${whereSql} ORDER BY created_at DESC`;
+    const params = [];
+    if (hasPagination) {
+      params.push(limit, offset);
+      query += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+    }
+    const result = await pool.query(query, params);
+
+    if (!hasPagination) {
+      // Legacy: bare array
+      return res.json(result.rows);
+    }
+
+    const totalRes = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM referral_requests${whereSql}`
+    );
+    res.json({ requests: result.rows, total: totalRes.rows[0]?.c || 0, limit, offset });
   } catch (err) {
     console.error("❌ GET referral-requests ERROR:", err);
     res.status(500).json({ error: "Server xato" });
@@ -5904,6 +5949,37 @@ app.post("/api/user/onboarding-complete", telegramAuth, async (req, res) => {
   }
 });
 
+app.post("/api/user/bonus-ad-shown", telegramAuth, async (req, res) => {
+  try {
+    const tgUserId = req.telegramUser?.id ? String(req.telegramUser.id) : null;
+    if (!tgUserId) {
+      return res.status(400).json({ error: "Telegram user_id kerak" });
+    }
+
+    let row = await setBonusAdShown(pool, tgUserId);
+    if (!row) {
+      const tgUser = req.telegramUser;
+      const tgName = tgUser?.first_name
+        ? `${tgUser.first_name}${tgUser.last_name ? ` ${tgUser.last_name}` : ""}`
+        : null;
+      await upsertUserFromTelegram(pool, {
+        userId: tgUserId,
+        fullName: tgName,
+        username: tgUser?.username || `user_${tgUserId}`,
+      });
+      row = await setBonusAdShown(pool, tgUserId);
+    }
+
+    if (!row) {
+      return res.status(404).json({ error: "User topilmadi" });
+    }
+    res.json({ success: true, bonus_ad_shown: true });
+  } catch (err) {
+    console.error("❌ /api/user/bonus-ad-shown:", err.message);
+    res.status(500).json({ error: "Server xato" });
+  }
+});
+
 // ===============================
 // CHANNEL NOTIFICATION
 // ===============================
@@ -5987,7 +6063,7 @@ const ALLOWED_GIFT_IDS = [
   "5170690322832818290",
   "5170521118301225164",
 ];
-const GIFT_PRICE_MAP = { 15: 5000, 25: 7000, 50: 13000, 100: 24000 };
+const GIFT_PRICE_MAP = { 15: 5000, 25: 7000, 50: 13000, 100: 25000 };
 const GIFT_STARS_MAP = {
   "5170145012310081615": 15, "5170233102089322756": 15,
   "5170250947678437525": 25, "5168103777563050263": 25,
