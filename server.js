@@ -3225,34 +3225,46 @@ app.post("/api/payments/match", internalAuth, async (req, res) => {
 // ===============================
 // 🔹 ADMIN — SEND STARS MANUALLY
 // ===============================
+// Atomik "band qilish" uchun manba statuslar. ⚠️ 'processing' BU YERDA BO'LMASLIGI SHART:
+// UPDATE maqsad qiymati ham 'processing' bo'lgani uchun, agar u manba ro'yxatida ham
+// bo'lsa — bitta so'rov band qilgan zahoti, xuddi shu qatorni ikkinchi so'rov ham
+// "band qilish mumkin" deb topaveradi (o'z-o'zini qayta band qilish teshigi, sinovda
+// aniqlandi: 20 ta parallel so'rovning 20 tasi ham g'olib chiqqan edi).
+// 'processing'da qotib qolgan (masalan server qulagan) buyurtmalar uchun alohida,
+// atomik bo'lmagan fallback pastda — bu juda kam uchraydigan admin qo'lda tiklash holati.
+const ADMIN_RESEND_CLAIMABLE_STATUSES = ["pending", "failed", "expired", "error"];
+
 app.post("/api/admin/stars/send/:id", adminAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "ID noto‘g‘ri" });
-    // Orderni topamiz (orders jadvalidan)
-    const q = await pool.query(
-      "SELECT * FROM orders WHERE id=$1",
-      [id]
-    );
-    if (!q.rows.length)
-      return res.status(404).json({ error: "Order topilmadi" });
-    const order = q.rows[0];
-    if (order.status === "completed")
-      return res.status(400).json({ error: "Yulduzlar allaqachon yuborilgan" });
 
-    if (
-      order.status === "expired" ||
-      order.payment_status === "expired" ||
-      order.status === "failed" ||
-      order.status === "error" ||
-      order.status === "pending"
-    ) {
-      await pool.query(
-        `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = $1`,
-        [id]
-      );
-      order.status = "processing";
-      order.payment_status = "paid";
+    // ⚡ Atomik "band qilish": avval SELECT bilan status tekshirilib, KEYIN alohida
+    // UPDATE qilinardi — ikki so'rov (masalan admin ikki marta bosib yuborsa) bir
+    // vaqtda kelsa, ikkalasi ham "yuborsa bo'ladi" deb topib, stars IKKI MARTA
+    // yuborilib ketishi mumkin edi. Endi bitta UPDATE...WHERE...RETURNING — faqat
+    // bitta so'rov qatorni "yutib oladi", ikkinchisi pastda 409 bilan qaytadi.
+    const claim = await pool.query(
+      `UPDATE orders SET status = 'processing', payment_status = 'paid'
+       WHERE id = $1 AND status = ANY($2::text[])
+       RETURNING *`,
+      [id, ADMIN_RESEND_CLAIMABLE_STATUSES]
+    );
+
+    let order = claim.rows[0];
+    if (!order) {
+      const existing = await pool.query("SELECT * FROM orders WHERE id = $1", [id]);
+      if (!existing.rows.length) return res.status(404).json({ error: "Order topilmadi" });
+      const cur = existing.rows[0];
+      if (cur.status === "completed") {
+        return res.status(400).json({ error: "Yulduzlar allaqachon yuborilgan" });
+      }
+      if (cur.status !== "processing") {
+        return res.status(409).json({ error: "Bu buyurtma hozir qayta ishlanmoqda, biroz kuting" });
+      }
+      // 'processing'da qotib qolgan (odatda server qulagan payt) — admin qo'lda
+      // qayta urinishi mumkin. Kam uchraydigan holat, to'liq atomik emas.
+      order = cur;
     }
 
     if (order.order_type === "stars_usdt") {
@@ -4211,31 +4223,32 @@ app.post("/api/admin/premium/resend/:id", adminAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "ID noto‘g‘ri" });
-    const orderResult = await pool.query(
-      "SELECT * FROM orders WHERE id=$1 AND order_type IN ('premium', 'premium_usdt', 'premium_paymee')",
-      [id]
+
+    // ⚡ Atomik "band qilish" — izoh uchun /api/admin/stars/send/:id ga qarang.
+    const claim = await pool.query(
+      `UPDATE orders SET status = 'processing', payment_status = 'paid'
+       WHERE id = $1 AND order_type IN ('premium', 'premium_usdt', 'premium_paymee')
+         AND status = ANY($2::text[])
+       RETURNING *`,
+      [id, ADMIN_RESEND_CLAIMABLE_STATUSES]
     );
-    if (!orderResult.rows.length)
-      return res.status(404).json({ error: "Order topilmadi" });
-    const order = orderResult.rows[0];
 
-    if (order.status === "completed" || order.status === "delivered" || order.status === "premium_sent") {
-      return res.status(400).json({ error: "Premium allaqachon yuborilgan" });
-    }
-
-    if (
-      order.status === "expired" ||
-      order.payment_status === "expired" ||
-      order.status === "failed" ||
-      order.status === "error" ||
-      order.status === "pending"
-    ) {
-      await pool.query(
-        `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = $1`,
+    let order = claim.rows[0];
+    if (!order) {
+      const existing = await pool.query(
+        "SELECT * FROM orders WHERE id=$1 AND order_type IN ('premium', 'premium_usdt', 'premium_paymee')",
         [id]
       );
-      order.status = "processing";
-      order.payment_status = "paid";
+      if (!existing.rows.length) return res.status(404).json({ error: "Order topilmadi" });
+      const cur = existing.rows[0];
+      if (["completed", "delivered", "premium_sent"].includes(cur.status)) {
+        return res.status(400).json({ error: "Premium allaqachon yuborilgan" });
+      }
+      if (cur.status !== "processing") {
+        return res.status(409).json({ error: "Bu buyurtma hozir qayta ishlanmoqda, biroz kuting" });
+      }
+      // 'processing'da qotib qolgan — admin qo'lda qayta urinishi mumkin (kam uchraydi).
+      order = cur;
     }
 
     if (order.order_type === "premium_paymee") {
@@ -6709,26 +6722,33 @@ app.post("/api/admin/gift/send/:id", adminAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: "ID noto'g'ri" });
-    const q = await pool.query("SELECT * FROM orders WHERE id = $1 AND order_type='gift'", [id]);
-    if (!q.rows.length) return res.status(404).json({ error: "Gift order topilmadi" });
-    const order = q.rows[0];
-    if (order.status === "completed" || order.status === "gift_sent") {
-      return res.status(400).json({ error: "Gift allaqachon yuborilgan" });
-    }
-    if (
-      order.status === "expired" ||
-      order.payment_status === "expired" ||
-      order.status === "failed" ||
-      order.status === "error" ||
-      order.status === "pending"
-    ) {
-      await pool.query(
-        `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = $1`,
+
+    // ⚡ Atomik "band qilish" — izoh uchun /api/admin/stars/send/:id ga qarang.
+    const claim = await pool.query(
+      `UPDATE orders SET status = 'processing', payment_status = 'paid'
+       WHERE id = $1 AND order_type = 'gift' AND status = ANY($2::text[])
+       RETURNING *`,
+      [id, ADMIN_RESEND_CLAIMABLE_STATUSES]
+    );
+
+    let order = claim.rows[0];
+    if (!order) {
+      const existing = await pool.query(
+        "SELECT * FROM orders WHERE id = $1 AND order_type='gift'",
         [id]
       );
-      order.status = "processing";
-      order.payment_status = "paid";
+      if (!existing.rows.length) return res.status(404).json({ error: "Gift order topilmadi" });
+      const cur = existing.rows[0];
+      if (["completed", "gift_sent"].includes(cur.status)) {
+        return res.status(400).json({ error: "Gift allaqachon yuborilgan" });
+      }
+      if (cur.status !== "processing") {
+        return res.status(409).json({ error: "Bu buyurtma hozir qayta ishlanmoqda, biroz kuting" });
+      }
+      // 'processing'da qotib qolgan — admin qo'lda qayta urinishi mumkin (kam uchraydi).
+      order = cur;
     }
+
     await sendGiftToUser(order);
     res.json({ success: true, message: "Gift yuborildi" });
   } catch (err) {
