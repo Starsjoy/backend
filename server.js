@@ -1513,18 +1513,22 @@ app.post("/api/admin/broadcast", adminAuth, async (req, res) => {
     }
     
     console.log(`📢 Broadcast tugadi: ${sent}/${totalUsers} yuborildi, ${failed} xato`);
-    
-    res.json({
-      success: true,
-      sent,
-      failed,
-      total: totalUsers,
-      errors: errors.slice(0, 10)
-    });
-    
+
+    if (!res.headersSent) {
+      res.json({
+        success: true,
+        sent,
+        failed,
+        total: totalUsers,
+        errors: errors.slice(0, 10)
+      });
+    }
+
   } catch (err) {
     console.error("❌ /api/admin/broadcast ERROR:", err);
-    res.status(500).json({ error: "Server xatosi", details: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Server xatosi", details: err.message });
+    }
   }
 });
 

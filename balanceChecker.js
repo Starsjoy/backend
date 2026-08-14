@@ -6,6 +6,19 @@ import { NewMessage } from 'telegram/events/index.js';
 import fetch from 'node-fetch';
 import express from 'express';
 
+// ======================
+// 🛡️ GLOBAL ERROR HANDLERS — Process crash oldini olish
+// ======================
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ Unhandled Rejection at:', promise, 'reason:', reason);
+  // Process'ni crash qilmaslik
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Uncaught Exception:', err);
+  // Critical xatolarda log qilib davom etish
+});
+
 // ================== CONFIG ==================
 const apiId = parseInt(process.env.TG_API_ID);
 const apiHash = process.env.TG_API_HASH;

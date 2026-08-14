@@ -223,34 +223,75 @@ async function runCleanup() {
 // =============================
 // Child process supervisor
 // =============================
-function runScript(label, filename) {
+// Crash-resilience: agar bola jarayon signal'siz (haqiqiy crash bilan)
+// to'xtasa, uni avtomatik qayta ishga tushiramiz. Har bir runScript()
+// chaqiruvi (label) o'zining mustaqil restart hisoblagichiga ega.
+function runScript(label, filename, options = {}) {
+  const {
+    restartDelayMs = 3000,
+    maxRestarts = 10,
+    stableAfterMs = 5 * 60 * 1000, // 5 daqiqa barqaror ishlasa — hisoblagich reset
+  } = options;
+
   const scriptPath = path.join(__dirname, filename);
 
-  const child = fork(scriptPath, [], {
-    cwd: __dirname,
-    stdio: "inherit",
-    env: { ...process.env },
-  });
+  let restartCount = 0;
+  let startedAt = 0;
 
-  children.set(label, child);
+  function start() {
+    const child = fork(scriptPath, [], {
+      cwd: __dirname,
+      stdio: "inherit",
+      env: { ...process.env },
+    });
 
-  child.on("exit", (code, signal) => {
-    children.delete(label);
-    if (signal) {
-      console.log(`🛑 ${label} (${filename}) signal: ${signal}`);
-    } else if (code !== 0 && code !== null) {
-      console.error(`❌ ${label} (${filename}) to'xtadi, exit code: ${code}`);
-    } else {
-      console.log(`ℹ️ ${label} (${filename}) tugadi`);
-    }
-  });
+    children.set(label, child);
+    startedAt = Date.now();
 
-  child.on("error", (err) => {
-    console.error(`❌ ${label} (${filename}) fork xatosi:`, err.message);
-  });
+    child.on("exit", (code, signal) => {
+      children.delete(label);
 
-  console.log(`▶️  ${label} ishga tushdi → ${filename}`);
-  return child;
+      if (signal) {
+        console.log(`🛑 ${label} (${filename}) signal: ${signal}`);
+        return;
+      }
+
+      if (code !== 0 && code !== null) {
+        console.error(`❌ ${label} (${filename}) to'xtadi, exit code: ${code}`);
+
+        // Uzoq vaqt (default 5 daqiqa) barqaror ishlagan bo'lsa, bu yangi
+        // muammo — eski restartlarni hisobga olmaymiz.
+        const uptimeMs = Date.now() - startedAt;
+        if (uptimeMs >= stableAfterMs) {
+          restartCount = 0;
+        }
+
+        if (restartCount >= maxRestarts) {
+          console.error(
+            `🚨 ${label}: maksimal qayta urinishlar tugadi, qayta ishga tushirilmaydi`
+          );
+          return;
+        }
+
+        restartCount += 1;
+        console.log(
+          `🔄 ${label} (${filename}) ${restartDelayMs}ms dan keyin qayta ishga tushiriladi (${restartCount}/${maxRestarts})`
+        );
+        setTimeout(start, restartDelayMs);
+      } else {
+        console.log(`ℹ️ ${label} (${filename}) tugadi`);
+      }
+    });
+
+    child.on("error", (err) => {
+      console.error(`❌ ${label} (${filename}) fork xatosi:`, err.message);
+    });
+
+    console.log(`▶️  ${label} ishga tushdi → ${filename}`);
+    return child;
+  }
+
+  return start();
 }
 
 function shutdownAll(signal) {

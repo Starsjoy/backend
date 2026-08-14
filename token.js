@@ -6,6 +6,23 @@ const { Pool } = pg;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
+bot.catch((err, ctx) => {
+  console.error('⚠️ Bot xatosi [' + ctx.updateType + ']:', err);
+});
+
+// ======================
+// 🛡️ GLOBAL ERROR HANDLERS — Process crash oldini olish
+// ======================
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ Unhandled Rejection at:', promise, 'reason:', reason);
+  // Process'ni crash qilmaslik
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Uncaught Exception:', err);
+  // Critical xatolarda log qilib davom etish
+});
+
 // PostgreSQL pool
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -362,16 +379,10 @@ bot.action('broadcast_cancel', async (ctx) => {
 // Broadcast tasdiqlash
 bot.action(/^broadcast_confirm_(.+)$/, async (ctx) => {
   const userId = ctx.from.id;
-  
-  if (!ADMIN_IDS.includes(userId)) return;
 
-  const data = ctx.match[1];
-  const state = broadcastState.get(userId);
-  
-  if (!state || !state.message) {
-    return await ctx.answerCbQuery('❌ Xabar topilmadi', { show_alert: true });
-  }
-
+  // Defined before the try (closes over ctx only, cannot itself throw) so the
+  // catch block below can always call it successfully, no matter which line
+  // inside the try below actually threw.
   const updateBroadcastMessage = async (text, extra = {}) => {
     const isMediaMessage = Boolean(
       ctx.callbackQuery?.message?.photo ||
@@ -412,11 +423,20 @@ bot.action(/^broadcast_confirm_(.+)$/, async (ctx) => {
     }
   };
 
-  await ctx.answerCbQuery('⏳ Yuborilmoqda...');
-  await updateBroadcastMessage('⏳ *Broadcast boshlanmoqda...*', { parse_mode: 'Markdown' });
-
-  // Barcha user_id larni olish
   try {
+    if (!ADMIN_IDS.includes(userId)) return;
+
+    const data = ctx.match[1];
+    const state = broadcastState.get(userId);
+
+    if (!state || !state.message) {
+      return await ctx.answerCbQuery('❌ Xabar topilmadi', { show_alert: true });
+    }
+
+    await ctx.answerCbQuery('⏳ Yuborilmoqda...');
+    await updateBroadcastMessage('⏳ *Broadcast boshlanmoqda...*', { parse_mode: 'Markdown' });
+
+    // Barcha user_id larni olish
     const result = await pool.query("SELECT user_id FROM users WHERE user_id IS NOT NULL AND user_id != ''");
     const userIds = result.rows.map(r => String(r.user_id)).filter(id => id && id.length > 0);
     
