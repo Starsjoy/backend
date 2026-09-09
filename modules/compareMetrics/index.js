@@ -212,13 +212,15 @@ async function periodMetrics(pool, { from, to }) {
     const meta = PRODUCT_META[type] || { label: type, icon: "📦" };
     const acc = byType.get(type) || {
       type, label: meta.label, icon: meta.icon,
-      orders: 0, quantity: 0, revenue: 0, cost: 0, cost_known: true,
+      orders: 0, quantity: 0, revenue: 0, cost: 0, unknown_revenue: 0,
     };
     acc.orders += cnt;
     acc.quantity += unit * cnt;
     acc.revenue += rev;
-    acc.cost += c;
-    if (!known) acc.cost_known = false;
+    // Tannarxi noma'lum guruhning tushumi ham, tannarxi ham alohida
+    // yuritiladi — aks holda butun mahsulot "noma'lum" bo'lib qolardi.
+    if (known) acc.cost += c;
+    else acc.unknown_revenue += rev;
     byType.set(type, acc);
 
     revenue += rev;
@@ -228,16 +230,23 @@ async function periodMetrics(pool, { from, to }) {
   }
 
   const products = [...byType.values()].map((p) => {
-    const comm = Math.round((p.revenue * COST.commissionPercent) / 100);
-    // Tannarxi noma'lum bo'lsa foyda ko'rsatmaymiz — 0 tannarx bilan
-    // hisoblasak, marja 98% bo'lib chiqadi va bu yolg'on.
-    const profit = p.cost_known ? p.revenue - p.cost - comm : null;
+    // Foyda FAQAT tannarxi ma'lum tushumdan hisoblanadi — 0 tannarx bilan
+    // hisoblasak, marja 98% bo'lib chiqadi va bu yolg'on. Lekin butun
+    // mahsulotni "noma'lum" deb yopib qo'yish ham noto'g'ri: masalan
+    // premium'ning 268 buyurtmasidan atigi 23 tasi (1 oylik) modelga
+    // kirmaydi — qolgan 245 tasining foydasi ko'rinishi kerak.
+    const knownRev = p.revenue - p.unknown_revenue;
+    const comm = Math.round((knownRev * COST.commissionPercent) / 100);
+    const profit = knownRev > 0 ? knownRev - p.cost - comm : null;
     return {
       type: p.type, label: p.label, icon: p.icon,
       orders: p.orders, quantity: p.quantity, revenue: p.revenue,
       profit,
-      margin: p.cost_known && p.revenue > 0 ? (profit / p.revenue) * 100 : null,
-      cost_known: p.cost_known,
+      margin: knownRev > 0 ? (profit / knownRev) * 100 : null,
+      /** false → bu mahsulotning bir qismi foydaga kirmagan */
+      cost_known: p.unknown_revenue === 0,
+      /** tannarxi modelga kirmagan tushum (foydadan tashqarida) */
+      unknown_cost_revenue: p.unknown_revenue,
     };
   }).sort((a, b) => b.revenue - a.revenue);
 
