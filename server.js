@@ -83,6 +83,8 @@ import {
   validateMissionGifts,
 } from "./modules/missions/index.js";
 import { registerAnalyticsRoutes } from "./modules/analytics/index.js";
+// 📊 /compare paneli uchun ko'rsatkichlar (tashqi tizim o'qiydi)
+import { registerCompareMetrics } from "./modules/compareMetrics/index.js";
 import {
   escapeTelegramHtml,
   sendOrdersChannelMessage,
@@ -7932,6 +7934,7 @@ registerMissionRoutes(app, missionCtx);
 validateMissionGifts(GIFT_STARS_MAP);
 
 registerAnalyticsRoutes(app, { pool, adminAuth });
+registerCompareMetrics(app, pool);
 
 async function bootstrapAppData() {
   await ensureTokensTable(pool);
