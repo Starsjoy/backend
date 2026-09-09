@@ -162,17 +162,32 @@ app.use((req, res, next) => {
 // ======================
 // 🛡️ SECURITY: Rate Limiting
 // ======================
+// Status polling yo'llari — to'lov kutilayotganda mijoz bularni har 3
+// soniyada so'raydi (15 daqiqada ~300 marta). Umumiy limit 200/15daq
+// bo'lgani uchun bitta to'lovni kutish 10 daqiqada limitni tugatib,
+// mijozning ekrani yangilanmay qolardi. Shuning uchun alohida limitga
+// chiqarildi.
+const POLLING_PATH_RE =
+  /^\/api\/(transactions\/|gift\/status\/|premium\/transactions\/|paymee-premium\/transactions\/)/;
+
+const isAdminPath = (req) => req.originalUrl.startsWith('/api/admin/');
+const isPollingPath = (req) => POLLING_PATH_RE.test(req.originalUrl);
+
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 daqiqa
   max: 200, // har bir IP dan 200 ta request
-  message: { error: 'Juda ko\'p so\'rov. 18 daqiqadan keyin urinib ko\'ring.' },
+  // Admin va polling yo'llarining o'z limiteri bor — bu yerda ikkinchi
+  // marta sanalmasin, aks holda o'sha tor limiterlar hech qachon
+  // ishlamaydi va 200/15daq hammasini bo'g'adi.
+  skip: (req) => isAdminPath(req) || isPollingPath(req),
+  message: { error: 'Juda ko\'p so\'rov. 15 daqiqadan keyin urinib ko\'ring.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 const orderLimiter = rateLimit({
   windowMs: 5 * 60 * 1000, // 5 daqiqa
   max: 20, // har bir IP dan 20 ta order
-  message: { error: 'Juda ko\'p order. 8 daqiqadan keyin urinib ko\'ring.' },
+  message: { error: 'Juda ko\'p order. 5 daqiqadan keyin urinib ko\'ring.' },
 });
 const searchLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 daqiqa
@@ -194,10 +209,24 @@ const adminLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Status polling uchun alohida rate limit — arzon o'qish so'rovlari.
+// 60/daqiqa = bitta IP dan 3 ta parallel poller (har biri 3 soniyada).
+const pollingLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 daqiqa
+  max: 60,
+  message: { error: 'Juda ko\'p so\'rov. Biroz kuting.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // Admin routes uchun alohida rate limit
 app.use('/api/admin/', adminLimiter);
 
-// Barcha API larga umumiy rate limit
+// Polling routes uchun alohida rate limit
+app.use('/api/', (req, res, next) =>
+  isPollingPath(req) ? pollingLimiter(req, res, next) : next());
+
+// Barcha API larga umumiy rate limit (admin va polling bundan tashqari)
 app.use('/api/', generalLimiter);
 
 // ======================
