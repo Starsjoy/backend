@@ -1,3 +1,5 @@
+import { listConfiguredCards } from "../paymentSystem/index.js";
+
 /** Klient yuborishi mumkin bo'lmagan narx maydonlari (Paymee / karta oqimi) */
 export const CLIENT_FORBIDDEN_PRICE_KEYS = [
   "amount",
@@ -109,24 +111,46 @@ export function sendGuardFailure(res, guardResult) {
   return res.status(guardResult.status).json(guardResult.body);
 }
 
-/** SMS match: karta oxirgi 4 raqam (.env TARGET_CARD_SUFFIX) */
+/**
+ * SMS match: karta oxirgi 4 raqami sozlangan kartalardan biriga mos kelishi kerak.
+ *
+ * ⚠️ AKTIV karta emas, sozlangan BARCHA kartalar qabul qilinadi — listener
+ *    bilan bir xil qoida. Admin kartani almashtirgan payt mijozning ekranida
+ *    hali eski karta turgan bo'lishi mumkin: u eski kartaga to'laydi va
+ *    buyurtmasi baribir yopilishi kerak.
+ *
+ *    Ilgari bu yerda faqat .env dagi TARGET_CARD_SUFFIX (UZCARD) tekshirilardi,
+ *    shuning uchun HUMO ga tushgan to'lov CARD_LAST4_MISMATCH bilan rad etilardi.
+ */
 export function validatePaymentCardLast4(cardLast4) {
-  const expected = String(process.env.TARGET_CARD_SUFFIX || "")
+  const expected = new Set(
+    listConfiguredCards()
+      .map((c) => c.suffix)
+      .filter(Boolean)
+  );
+
+  // Zaxira: registrda hech narsa bo'lmasa eski .env qiymatiga tushamiz
+  const legacy = String(process.env.TARGET_CARD_SUFFIX || "")
     .replace(/\D/g, "")
     .slice(-4);
-  if (!expected) {
+  if (legacy) expected.add(legacy);
+
+  if (expected.size === 0) {
     return { ok: true, skipped: true };
   }
+
   const got = String(cardLast4 || "")
     .replace(/\D/g, "")
     .slice(-4);
-  if (!got || got !== expected) {
+  if (!got || !expected.has(got)) {
     return {
       ok: false,
       status: 400,
       body: {
         error: "To'lov karta raqami mos emas",
         code: "CARD_LAST4_MISMATCH",
+        expected: [...expected],
+        received: got || null,
       },
     };
   }
