@@ -3,11 +3,20 @@
  * Fragment cookie lar `tokens` jadvalida qoladi.
  */
 
+import {
+  normalizeCardSlot,
+  setPaymentSystemRuntime,
+  getPublicPaymentInfo,
+  listCards,
+} from "../paymentSystem/index.js";
+
 export const SETTING_KEYS = {
   MAINTENANCE: "maintenance",
   STARS_PURCHASE_MODE: "stars_purchase_mode",
   FRAGMENT_PAYMENT_METHOD: "fragment_payment_method",
   USERBOT_AUTO_REFILL: "userbot_auto_refill_enabled",
+  /** Mijozga qaysi karta ko'rsatiladi: uzcard1 | humo1 */
+  PAYMENT_SYSTEM: "payment_system",
 };
 
 const DEFAULTS = {
@@ -15,6 +24,7 @@ const DEFAULTS = {
   [SETTING_KEYS.STARS_PURCHASE_MODE]: "fragment",
   [SETTING_KEYS.FRAGMENT_PAYMENT_METHOD]: "ton",
   [SETTING_KEYS.USERBOT_AUTO_REFILL]: "true",
+  [SETTING_KEYS.PAYMENT_SYSTEM]: "uzcard1",
 };
 
 /** Eski `tokens` jadvalidan bir martalik ko'chirish */
@@ -115,7 +125,12 @@ export async function loadSettings(pool, force = false) {
       map[SETTING_KEYS.USERBOT_AUTO_REFILL],
       true
     ),
+    payment_system: normalizeCardSlot(map[SETTING_KEYS.PAYMENT_SYSTEM]),
   };
+
+  // paymentSystem moduli aktiv kartani runtime'da saqlaydi — DB bilan sinxron
+  // turishi uchun har o'qishda yangilaymiz (kesh TTL 3s, arzon).
+  setPaymentSystemRuntime(normalized.payment_system);
 
   cache = normalized;
   cacheAt = Date.now();
@@ -138,6 +153,9 @@ export function toPublicAppConfig(settings) {
     premium_purchase_path: premiumPath,
     fragment_payment_method: settings.fragment_payment_method,
     fragment_payment_label: fragmentPaymentMethodLabel(settings.fragment_payment_method),
+    // Aktiv karta — frontend to'lov ekranini shundan chizadi (build paytidagi
+    // VITE_CARD_NUMBER o'rniga, aks holda admin switch ishlamasdi).
+    ...getPublicPaymentInfo(),
   };
 }
 
@@ -166,6 +184,46 @@ export async function setFragmentPaymentMethod(pool, method) {
 export async function setUserbotAutoRefill(pool, enabled) {
   await setSetting(pool, SETTING_KEYS.USERBOT_AUTO_REFILL, enabled ? "true" : "false");
   return loadSettings(pool, true);
+}
+
+/**
+ * Mijozga ko'rsatiladigan kartani almashtirish.
+ *
+ * Sozlanmagan (raqami yo'q) slotni tanlashga yo'l qo'ymaymiz — aks holda
+ * to'lov ekranida bo'sh karta chiqadi.
+ */
+export async function setPaymentSystem(pool, slot) {
+  const target = normalizeCardSlot(slot);
+  const card = listCards().find((c) => c.slot === target);
+  if (!card?.payable) {
+    const err = new Error(`${target} sozlanmagan — .env da karta raqami yo'q`);
+    err.code = "CARD_NOT_CONFIGURED";
+    throw err;
+  }
+  await setSetting(pool, SETTING_KEYS.PAYMENT_SYSTEM, target);
+  const settings = await loadSettings(pool, true);
+  console.log(`💳 To'lov kartasi almashtirildi: ${card.title} (${card.masked})`);
+  return settings;
+}
+
+/** Admin panel uchun: barcha slotlar va ularning holati */
+export async function getPaymentCardsForAdmin(pool) {
+  const settings = await loadSettings(pool);
+  const active = normalizeCardSlot(settings.payment_system);
+  return listCards().map((c) => ({
+    slot: c.slot,
+    brand: c.brand,
+    title: c.title,
+    label: c.label,
+    masked: c.masked,
+    display: c.display,
+    name: c.name,
+    suffix: c.suffix,
+    chat_id: c.chat_id,
+    configured: c.configured,
+    payable: c.payable,
+    active: c.slot === active,
+  }));
 }
 
 /** `tokens` jadvalidagi eski kalitlardan `settings` ga ko'chirish */

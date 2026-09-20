@@ -5,6 +5,14 @@ import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage } from 'telegram/events/index.js';
 import fetch from 'node-fetch';
 import express from 'express';
+import {
+    cardsForChat,
+    findCardForSms,
+    monitoredChatIds,
+    parsePaymentForBrand,
+    describeCards,
+    listConfiguredCards,
+} from './modules/paymentSystem/index.js';
 
 // ======================
 // 🛡️ GLOBAL ERROR HANDLERS — Process crash oldini olish
@@ -23,8 +31,11 @@ process.on('uncaughtException', (err) => {
 const apiId = parseInt(process.env.TG_API_ID);
 const apiHash = process.env.TG_API_HASH;
 const stringSession = new StringSession(process.env.TG_SESSION);
-const UZCARD_CHAT_ID = String(process.env.UZCARD_CHAT_ID);
-const TARGET_CARD_SUFFIX = process.env.TARGET_CARD_SUFFIX?.replace(/\D/g, "").slice(-4);
+// Kartalar registri — UZCARD va HUMO bitta listenerda.
+// MUHIM: bu yerda AKTIV karta emas, sozlangan BARCHA kartalar kuzatiladi.
+// Admin kartani almashtirgan payt mijoz ekranida hali eski karta turgan
+// bo'lishi mumkin — u eski kartaga to'laydi va buyurtma baribir yopilishi kerak.
+const MONITORED_CARD_CHATS = monitoredChatIds();
 
 const MATCH_API_STARS = process.env.MATCH_API_STARS;
 const MATCH_API_STARS_PAYMEE = process.env.MATCH_API_STARS_PAYMEE;
@@ -48,26 +59,8 @@ if (!MATCH_API_STARS || !MATCH_API_PREMIUM) {
 let client = null;
 let isClientReady = false;
 
-// ================== SMS PAYMENT PARSER (UZCARD) ==================
-function parsePayment(text) {
-    if (!text) return null;
-
-    // UzCard format: 💳 ***2022
-    const cardMatch = text.match(/💳\s*\*{3}(\d{4})/);
-    const card_last4 = cardMatch ? cardMatch[1] : null;
-
-    // UzCard format: ➕ 11 000.00 UZS (probel=ming ajratgich, nuqta=decimal)
-    // [\d ]+ — faqat raqam va oddiy probel (newline emas!)
-    const amountMatch = text.match(/➕\s*([\d ]+(?:\.\d{2})?)\s*UZS/i);
-    if (!amountMatch) return null;
-
-    const amountRaw = amountMatch[1].replace(/\s/g, "");
-    const amount = Math.floor(parseFloat(amountRaw));
-
-    if (!card_last4 || !amount || amount <= 0) return null;
-
-    return { card_last4, amount, raw_text: text };
-}
+// SMS parserlar modulda (UZCARD va HUMO formatlari alohida) —
+// parsePaymentForBrand(brand, text) to'g'ri parserni tanlaydi.
 
 // ================== AutoReconnect (exponential backoff) ==================
 async function autoReconnect(clientInstance) {
@@ -113,64 +106,47 @@ export async function initBalanceClient() {
 
     console.log('✅ GramJS client ulandi!');
 
-    // UZCARD entity ni to'g'ridan-to'g'ri olish
-    console.log('🔍 UZCARD chat qidirilmoqda... (ID:', UZCARD_CHAT_ID, ')');
-    let uzcardEntity = null;
+    // ================== KARTA CHATLARI ==================
+    console.log('💳 Sozlangan kartalar:');
+    for (const line of describeCards()) console.log(`   ${line}`);
 
-    // 1-usul: getEntity bilan to'g'ridan-to'g'ri olish
-    try {
-        uzcardEntity = await client.getEntity(parseInt(UZCARD_CHAT_ID));
-        if (uzcardEntity) {
-            console.log(`✅ UZCARD chat topildi (getEntity): ${uzcardEntity.firstName || uzcardEntity.title || uzcardEntity.username || 'N/A'}`);
-        }
-    } catch (e) {
-        console.log('⚠️ getEntity bilan topilmadi, dialoglardan qidirilmoqda...');
+    if (MONITORED_CARD_CHATS.length === 0) {
+        console.error("❌ Bironta ham karta sozlanmagan! .env da karta suffiksi va chat ID sini tekshiring.");
+        console.error("   UZCARD: UZCARD_CHAT_ID + TARGET_CARD_SUFFIX (yoki VITE_CARD_NUMBER)");
+        console.error("   HUMO:   HUMO_CHAT_ID + TOPUP_CARD_NUMBER_HUMO");
     }
 
-    // 2-usul: Dialoglardan qidirish (agar getEntity ishlamasa)
-    if (!uzcardEntity) {
+    // Har bir karta chatini "isitib" qo'yamiz. Entity topilmasa ham listener
+    // peerId bo'yicha filtrlagani uchun baribir ishlaydi — bu faqat
+    // GramJS ning ichki keshini to'ldirish va startupda xatoni erta ko'rsatish.
+    for (const chatId of MONITORED_CARD_CHATS) {
+        let entity = null;
         try {
-            const dialogs = await client.getDialogs({ limit: 500 });
-            console.log(`📋 Jami ${dialogs.length} ta dialog yuklab olindi`);
-
-            for (const d of dialogs) {
-                const peerId = d.id?.value !== undefined ? String(d.id.value) : String(d.id);
-                if (peerId === UZCARD_CHAT_ID || peerId === `-${UZCARD_CHAT_ID}`) {
-                    uzcardEntity = d.entity;
-                    console.log(`✅ UZCARD chat topildi (dialog): ${d.name || d.title} | ID: ${peerId}`);
-                    break;
+            entity = await client.getEntity(parseInt(chatId));
+        } catch {
+            try {
+                const dialogs = await client.getDialogs({ limit: 500 });
+                for (const d of dialogs) {
+                    const pid = d.id?.value !== undefined ? String(d.id.value) : String(d.id);
+                    if (pid.replace(/^-100/, '').replace(/^-/, '') === chatId) {
+                        entity = d.entity;
+                        break;
+                    }
                 }
+            } catch (e) {
+                console.error(`⚠️ Dialoglarni yuklashda xato (${chatId}):`, e.message);
             }
-        } catch (e) {
-            console.error('⚠️ Dialoglarni yuklashda xato:', e.message);
         }
-    }
-
-    // 3-usul: PeerUser/PeerChat sifatida
-    if (!uzcardEntity) {
-        try {
-            const inputPeer = new Api.InputPeerUser({
-                userId: parseInt(UZCARD_CHAT_ID),
-                accessHash: BigInt(0),
-            });
-            uzcardEntity = await client.getEntity(inputPeer);
-            if (uzcardEntity) {
-                console.log(`✅ UZCARD chat topildi (InputPeerUser): ${uzcardEntity.firstName || uzcardEntity.title || 'N/A'}`);
-            }
-        } catch (e) {
-            console.log('⚠️ InputPeerUser bilan ham topilmadi:', e.message);
+        if (entity) {
+            const nm = entity.firstName || entity.title || entity.username || 'N/A';
+            console.log(`✅ Karta chati topildi: ${chatId} (${nm})`);
+        } else {
+            console.log(`⚠️ Karta chati entity topilmadi: ${chatId} — peerId orqali baribir ishlaydi`);
         }
-    }
-
-    if (!uzcardEntity) {
-        console.error('❌ UZCARD chat topilmadi! ID:', UZCARD_CHAT_ID);
-        console.error('💡 To\'g\'ri UZCARD_CHAT_ID .env da belgilanganligini tekshiring');
-        // Entity topilmasa ham listener ni ishga tushiramiz — peerId orqali filtrlaydi
-        console.log('⚠️ Entity topilmadi, lekin SMS listener baribir peerId orqali ishlaydi');
     }
 
     // ================== SMS PAYMENT HANDLER ==================
-    console.log('📡 UZCARD SMS listener ishga tushmoqda...');
+    console.log(`📡 SMS listener ishga tushmoqda (kuzatilayotgan karta chatlari: ${MONITORED_CARD_CHATS.join(", ") || "—"})...`);
 
     const ORDERS_CHANNEL = String(process.env.ORDERS_CHANNEL || "-1003752422150");
     const PREMIUMSEND_CHANNEL = String(process.env.PREMIUMSEND_CHANNEL || "-1003606510579");
@@ -229,28 +205,46 @@ export async function initBalanceClient() {
                     return;
                 }
 
-                if (peerId !== UZCARD_CHAT_ID) return;
+                // Shu chatga SMS yuboradigan sozlangan kartalar (bittadan ortiq
+                // bo'lishi mumkin — masalan ikkala karta bitta bank botida)
+                const chatCards = cardsForChat(peerId);
+                if (chatCards.length === 0) return;
 
-                console.log("📩 [UZCARD SMS] Xabar keldi:", {
+                const brands = [...new Set(chatCards.map((c) => c.brand))];
+                console.log(`📩 [${brands.join("/").toUpperCase()} SMS] Xabar keldi:`, {
                     peerId,
                     text: msg.message,
                 });
 
-                if (!text.includes("➕")) return;
-                if (!TARGET_CARD_SUFFIX) {
-                    console.warn("⚠️ TARGET_CARD_SUFFIX yo'q — SMS qayta ishlanmaydi");
+                // Kiruvchi to'lov belgisi — HUMO ba'zan "+" ishlatadi
+                if (!text.includes("➕") && !/\+\s*[\d.]/.test(text)) return;
+
+                // Shu chatdagi har bir brend uchun mos parserni sinab ko'ramiz
+                let parsed = null;
+                let card = null;
+                for (const brand of brands) {
+                    const p = parsePaymentForBrand(brand, text);
+                    if (!p) continue;
+                    const match = findCardForSms(peerId, p.card_last4);
+                    if (match) {
+                        parsed = p;
+                        card = match;
+                        break;
+                    }
+                }
+
+                if (!parsed || !card) {
+                    const any = parsePaymentForBrand(brands[0], text);
+                    if (any?.card_last4) {
+                        console.log(
+                            `⏭️ Boshqa karta: SMS ***${any.card_last4}, sozlanganlar: ` +
+                            chatCards.map((c) => `***${c.suffix}`).join(", ")
+                        );
+                    }
                     return;
                 }
 
-                const parsed = parsePayment(text);
-                if (!parsed) return;
-
-                if (parsed.card_last4 !== TARGET_CARD_SUFFIX) {
-                    console.log(
-                        `⏭️ Boshqa karta: SMS ***${parsed.card_last4}, kutilgan ***${TARGET_CARD_SUFFIX}`
-                    );
-                    return;
-                }
+                console.log(`💳 Karta topildi: ${card.title} (***${card.suffix})`);
 
                 console.log("💳 To'lov aniqlandi:", parsed);
 
@@ -404,7 +398,10 @@ export async function initBalanceClient() {
         }
     }, 60000);
 
-    console.log('✅ UZCARD SMS listener tayyor! (2 kanal monitoring: ORDERS + PREMIUM)');
+    console.log(
+        `✅ SMS listener tayyor! Kartalar: ${listConfiguredCards().map((c) => c.title).join(" + ") || "—"}` +
+        ` | kanallar: ORDERS + PREMIUM`
+    );
 
     // AutoReconnect ni background da ishga tushirish
     autoReconnect(client).catch((e) => console.error("autoReconnect failed:", e));

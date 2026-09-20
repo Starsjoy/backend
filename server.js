@@ -7910,7 +7910,7 @@ registerPaymeeStarsRoutes(app, paymeeStarsCtx);
 registerPaymeePremiumRoutes(app, paymeePremiumCtx);
 registerRobynhoodAdminRoutes(app, { pool, adminAuth });
 
-registerSettingsRoutes(app, { pool, adminAuth });
+registerSettingsRoutes(app, { pool, adminAuth, internalAuth });
 registerUserbotStarRefillRoutes(app, {
   pool,
   adminAuth,
