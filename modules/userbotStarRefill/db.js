@@ -44,13 +44,17 @@ export async function insertRefillRecord(pool, row) {
 
 export async function updateRefillRecord(pool, id, patch) {
   const r = await pool.query(
+    // ⚠️ Placeholderlar $1 dan boshlanishi SHART. Ilgari $2..$7 yozilgan edi,
+    //    massivda esa 6 ta qiymat bor edi — $1 so'rovda umuman ishlatilmagani
+    //    uchun Postgres "could not determine data type of parameter $1" xatosini
+    //    berardi va HAR BIR to'ldirish yozuvi `pending` bo'lib qolardi.
     `UPDATE userbot_star_refills SET
-      balance_after = COALESCE($2, balance_after),
-      transaction_id = COALESCE($3, transaction_id),
-      paymee_response = COALESCE($4::jsonb, paymee_response),
-      status = COALESCE($5, status),
-      error_message = COALESCE($6, error_message)
-     WHERE id = $7
+      balance_after = COALESCE($1, balance_after),
+      transaction_id = COALESCE($2, transaction_id),
+      paymee_response = COALESCE($3::jsonb, paymee_response),
+      status = COALESCE($4, status),
+      error_message = COALESCE($5, error_message)
+     WHERE id = $6
      RETURNING *`,
     [
       patch.balance_after ?? null,
