@@ -80,24 +80,13 @@ function getSubscribeKeyboard() {
 // ===============================
 // CHIROYLI START XABARI
 // ===============================
-function getStartText(name) {
+function getStartText() {
   return `
-⭐ StarsJoy'ga xush kelibsiz!
+🇺🇿 Telegram Stars, Premium va Gift’larni tez va xavfsiz xarid qiling. *Boshlash uchun START tugmasini bosing*
 
-Telegram Stars, Premium va Gifts - barchasini bir joydan, tez va qulay sotib oling.
+🇷🇺 Покупайте Telegram Stars, Premium и подарки быстро и безопасно. *Нажмите START, чтобы начать*
 
-Boshlash uchun START tugmani bosing 👇
-
-- - -
-
-🇺🇿 «START» tugmasini bosish orqali, siz ommaviy oferta shartlarini qabul qilgan hisoblanasiz.
-
-🇷🇺 Нажимая «START», вы принимаете условия публичной оферты.
-
-🇬🇧 By tapping «START», you agree to our public offer.
-
-📄 Oferta: starsjoy.uz/oferta
-
+🇬🇧 Buy Telegram Stars, Premium and Gifts quickly and securely. *Tap START to get started*
 `;
 }
 
@@ -182,7 +171,7 @@ bot.start(async (ctx) => {
   // Obuna bo'lgan — davom etamiz
   await safeReply(
     ctx,
-    getStartText(fullName),
+    getStartText(),
     Markup.inlineKeyboard([
         [
           Markup.button.webApp("START", "https://vitahealth.uz/")
@@ -279,7 +268,7 @@ bot.action('check_subscription', async (ctx) => {
 
   await safeReply(
     ctx,
-    getStartText(fullName),
+    getStartText(),
     Markup.inlineKeyboard([
         [
           Markup.button.webApp("START", "https://vitahealth.uz/")

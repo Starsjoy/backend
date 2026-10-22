@@ -1,13 +1,46 @@
+import { getUserAppLanguage } from "./orderExpiredMessages.js";
+
 export const REVIEW_REQUEST_DELAY_MS = 5 * 60 * 1000;
 
-export const REVIEW_REQUEST_TEXT = `Assalomu alaykum!
+// en sahifa saytda yo'q — en foydalanuvchilar ruscha sahifaga yo'naltiriladi
+const REVIEW_URL_UZ = "https://starsjoy.uz/sharh-qoldirish";
+const REVIEW_URL_RU = "https://starsjoy.uz/ru/sharh-qoldirish";
 
-StarsJoy xizmatidan foydalangan bo'lsangiz, fikringiz biz uchun juda muhim. Bir necha soniya vaqt ajratib, xizmatimizni baholab o'tsangiz minnatdor bo'lamiz.
+const REVIEW_TEXTS = {
+  uz: {
+    text:
+      "⭐ Xaridingiz sizga yoqdimi?\n\n" +
+      "StarsJoy'ni tanlaganingiz uchun rahmat! Fikringiz biz uchun juda muhim — xizmatimizni baholashga bir daqiqa ajrating.",
+    button: "⭐ Sharh qoldirish",
+    url: REVIEW_URL_UZ,
+  },
+  ru: {
+    text:
+      "⭐ Вам понравилась покупка?\n\n" +
+      "Спасибо, что выбрали StarsJoy! Ваше мнение очень важно для нас — уделите минуту, чтобы оценить наш сервис.",
+    button: "⭐ Оставить отзыв",
+    url: REVIEW_URL_RU,
+  },
+  en: {
+    text:
+      "⭐ Did you enjoy your purchase?\n\n" +
+      "Thank you for choosing StarsJoy! Your feedback matters to us — please take a minute to rate our service.",
+    button: "⭐ Leave a review",
+    url: REVIEW_URL_RU,
+  },
+};
 
-Sharh qoldirish uchun havola:
-starsjoy.uz/sharh-qoldirish
-
-Har bir fikr StarsJoy'ni yanada yaxshilashga yordam beradi. Rahmat!`;
+export function buildReviewRequestMessage(language) {
+  const tr = REVIEW_TEXTS[language] || REVIEW_TEXTS.uz;
+  return {
+    text: tr.text,
+    extra: {
+      reply_markup: {
+        inline_keyboard: [[{ text: tr.button, url: tr.url }]],
+      },
+    },
+  };
+}
 
 const SUCCESS_STATUSES = ["delivered", "completed"];
 
@@ -92,7 +125,9 @@ export async function runReviewRequestJob(pool, bot) {
       if (!claim.rowCount) continue;
 
       try {
-        await bot.telegram.sendMessage(row.owner_user_id, REVIEW_REQUEST_TEXT);
+        const lang = await getUserAppLanguage(pool, row.owner_user_id);
+        const { text, extra } = buildReviewRequestMessage(lang);
+        await bot.telegram.sendMessage(row.owner_user_id, text, extra);
         sent++;
         await new Promise((resolve) => setTimeout(resolve, 60));
       } catch (sendErr) {

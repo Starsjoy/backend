@@ -94,9 +94,10 @@ import {
   sendGuardFailure,
 } from "./modules/payments/clientAmountGuard.js";
 import {
-  getExpiredOrderNotifyText,
-  shouldSendExpiredOrderNotify,
+  sendExpiredOrderNotify,
 } from "./modules/notifications/orderExpiredMessages.js";
+import { sendDeliveredOrderNotify } from "./modules/notifications/orderDeliveredMessages.js";
+import { sendDelayedOrderNotify } from "./modules/notifications/orderDelayedMessages.js";
 import {
   ensureReviewRequestTable,
   scheduleReviewRequestAfterFirstPurchase,
@@ -460,23 +461,7 @@ async function loadPendingOrdersToCache() {
         }
         
         // Xabar yuborish (faqat 1 marta)
-        if (shouldSendExpiredOrderNotify(row.order_type) && row.owner_user_id && bot) {
-          try {
-            await bot.telegram.sendMessage(
-              row.owner_user_id,
-              getExpiredOrderNotifyText(row.order_type)
-            );
-            
-            // expired_notified ni true qilish
-            await pool.query(
-              `UPDATE orders SET expired_notified = true WHERE id = $1`,
-              [row.id]
-            );
-            console.log(`📩 Expired order xabari yuborildi (startup): user=${row.owner_user_id}, order=#${row.id}, type=${row.order_type}`);
-          } catch (notifyErr) {
-            console.error(`❌ Expired order xabari yuborishda xato (user=${row.owner_user_id}):`, notifyErr.message);
-          }
-        }
+        await sendExpiredOrderNotify(pool, bot, row.id);
       }
     }
     
@@ -699,23 +684,7 @@ setInterval(async () => {
         }
 
         // Order expired bo'lsa, foydalanuvchiga xabar yuborish (faqat 1 marta)
-        if (shouldSendExpiredOrderNotify(row.order_type) && row.owner_user_id && bot) {
-          try {
-            await bot.telegram.sendMessage(
-              row.owner_user_id,
-              getExpiredOrderNotifyText(row.order_type)
-            );
-            
-            // expired_notified ni true qilish
-            await pool.query(
-              `UPDATE orders SET expired_notified = true WHERE id = $1`,
-              [row.id]
-            );
-            console.log(`📩 Expired order xabari yuborildi: user=${row.owner_user_id}, order=#${row.id}, type=${row.order_type}`);
-          } catch (notifyErr) {
-            console.error(`❌ Expired order xabari yuborishda xato (user=${row.owner_user_id}):`, notifyErr.message);
-          }
-        }
+        await sendExpiredOrderNotify(pool, bot, row.id);
       }
     }
   } catch (err) {
@@ -3051,23 +3020,7 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
           console.log(`⏰ Order #${order.id} expired`);
           
           // 📩 Foydalanuvchiga expired xabari yuborish
-          const ownerUserId = check.rows[0]?.owner_user_id;
-          const alreadyNotified = check.rows[0]?.expired_notified;
-          if (ownerUserId && bot && !alreadyNotified) {
-            try {
-              await bot.telegram.sendMessage(
-                ownerUserId,
-                getExpiredOrderNotifyText("stars")
-              );
-              await pool.query(
-                `UPDATE orders SET expired_notified = true WHERE id = $1`,
-                [order.id]
-              );
-              console.log(`📩 Expired stars xabari yuborildi (setTimeout): user=${ownerUserId}, order=#${order.id}`);
-            } catch (notifyErr) {
-              console.error(`❌ Expired stars xabari yuborishda xato (user=${ownerUserId}):`, notifyErr.message);
-            }
-          }
+          await sendExpiredOrderNotify(pool, bot, order.id);
         }
       } catch (e) {
         console.error("❌ Expiry tekshirishda xato:", e);
@@ -3876,23 +3829,7 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
           console.log(`⏰ Premium Order #${order.id} expired`);
           
           // 📩 Foydalanuvchiga expired xabari yuborish
-          const ownerUserId = check.rows[0]?.owner_user_id;
-          const alreadyNotified = check.rows[0]?.expired_notified;
-          if (ownerUserId && bot && !alreadyNotified) {
-            try {
-              await bot.telegram.sendMessage(
-                ownerUserId,
-                getExpiredOrderNotifyText("premium")
-              );
-              await pool.query(
-                `UPDATE orders SET expired_notified = true WHERE id = $1`,
-                [order.id]
-              );
-              console.log(`📩 Expired premium xabari yuborildi (setTimeout): user=${ownerUserId}, order=#${order.id}`);
-            } catch (notifyErr) {
-              console.error(`❌ Expired premium xabari yuborishda xato (user=${ownerUserId}):`, notifyErr.message);
-            }
-          }
+          await sendExpiredOrderNotify(pool, bot, order.id);
         }
       } catch (e) {
         console.error("❌ Premium Expiry tekshirishda xato:", e);
@@ -4038,6 +3975,7 @@ async function sendPremiumToUser(orderId, recipientId, months) {
       
       // �📢 Kanalga xabar
       sendChannelNotification(orderId, 'premium').catch(err => console.error("Notification error:", err));
+      sendDeliveredOrderNotify(pool, bot, orderId);
       return { status: "completed", transaction_id: data.transaction_id };
     }
     console.log("❌ Provider error:", data.error);
@@ -6036,6 +5974,12 @@ async function sendChannelNotification(orderId, type) {
     const res = await pool.query(`SELECT * FROM orders WHERE id = $1`, [orderId]);
     const order = res.rows[0];
     if (!order) return;
+
+    // Eski RobynHood premium yo'li sendUnifiedChannelNotification'dan o'tmaydi — sharh so'rovi shu yerda
+    scheduleReviewRequestAfterFirstPurchase(pool, order).catch((err) =>
+      console.error("❌ Sharh so'rovi rejalashtirish:", err.message)
+    );
+
     const channelId = -1003752422150; // Orders channel ID
     const botToken = process.env.BOT_TOKEN;
     
@@ -6425,23 +6369,7 @@ const uniqueSum = await generateUniqueOrderSum(finalAmount, client);
           console.log(`⏰ Gift Order #${order.id} expired`);
           
           // 📩 Foydalanuvchiga expired xabari yuborish
-          const ownerUserId = check.rows[0]?.owner_user_id;
-          const alreadyNotified = check.rows[0]?.expired_notified;
-          if (ownerUserId && bot && !alreadyNotified) {
-            try {
-              await bot.telegram.sendMessage(
-                ownerUserId,
-                getExpiredOrderNotifyText("gift")
-              );
-              await pool.query(
-                `UPDATE orders SET expired_notified = true WHERE id = $1`,
-                [order.id]
-              );
-              console.log(`📩 Expired gift xabari yuborildi (setTimeout): user=${ownerUserId}, order=#${order.id}`);
-            } catch (notifyErr) {
-              console.error(`❌ Expired gift xabari yuborishda xato (user=${ownerUserId}):`, notifyErr.message);
-            }
-          }
+          await sendExpiredOrderNotify(pool, bot, order.id);
         }
       } catch (e) {
         console.error("❌ Gift expiry xatosi:", e);
@@ -7497,7 +7425,13 @@ async function sendUnifiedChannelNotification(order, type, isFailed = false) {
     console.error("❌ Channel notification error:", err.message);
   }
 
-  if (!isFailed) {
+  if (isFailed) {
+    // 📩 Foydalanuvchiga "to'lov qabul qilindi, yetkazish kechikmoqda" xabari (o'z tilida)
+    await sendDelayedOrderNotify(pool, bot, order.id);
+  } else {
+    // 📩 Foydalanuvchiga "muvaffaqiyatli yuborildi" xabari (o'z tilida)
+    await sendDeliveredOrderNotify(pool, bot, order.id);
+
     scheduleReviewRequestAfterFirstPurchase(pool, order).catch((err) =>
       console.error("❌ Sharh so'rovi rejalashtirish:", err.message)
     );

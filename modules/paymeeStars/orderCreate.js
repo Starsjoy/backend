@@ -10,7 +10,7 @@ import {
   validateClientFinalAmount,
   validateClientSlotPrice,
 } from "../payments/clientAmountGuard.js";
-import { getExpiredOrderNotifyText } from "../notifications/orderExpiredMessages.js";
+import { sendExpiredOrderNotify } from "../notifications/orderExpiredMessages.js";
 
 const ORDER_TYPE = "stars_paymee";
 
@@ -266,18 +266,7 @@ export async function createPaymeeStarsOrder(req, res, ctx) {
           releaseDiscountPriceSlotByOrderId(order.id);
           removePriceFromCacheByOrderId(order.id);
 
-          const owner = check.rows[0]?.owner_user_id;
-          if (owner && bot && !check.rows[0]?.expired_notified) {
-            try {
-              await bot.telegram.sendMessage(
-                owner,
-                getExpiredOrderNotifyText("stars_paymee")
-              );
-              await pool.query(`UPDATE orders SET expired_notified = true WHERE id = $1`, [order.id]);
-            } catch {
-              /* ignore */
-            }
-          }
+          await sendExpiredOrderNotify(pool, bot, order.id);
         }
       } catch {
         /* ignore */

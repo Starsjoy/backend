@@ -1,3 +1,5 @@
+import { sendDelayedOrderNotify } from "../notifications/orderDelayedMessages.js";
+
 /** Telegram HTML xabarlar uchun xavfsiz matn (traceback dagi <module> va h.k.) */
 export function escapeTelegramHtml(text) {
   return String(text || "")
@@ -31,14 +33,7 @@ export async function notifyFragmentDeliveryIssue(ctx, order, errMsg, kind = "st
     }
   }
 
-  if (bot && owner) {
-    try {
-      await bot.telegram.sendMessage(
-        owner,
-        `⚠️ To'lovingiz qabul qilindi, lekin ${isPremium ? "premium" : "stars"} hozir avtomatik yuborilmadi.\n\nAdmin tez orada yuboradi yoki @StarsPaymeeSupport ga yozing.\n\nBuyurtma #${order.id}`
-      );
-    } catch {
-      /* ignore */
-    }
+  if (owner) {
+    await sendDelayedOrderNotify(ctx.pool, bot, order.id);
   }
 }

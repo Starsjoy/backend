@@ -1,4 +1,5 @@
 import { escapeTelegramHtml, sendOrdersChannelMessage } from "../telegram/channelNotify.js";
+import { sendDelayedOrderNotify } from "../notifications/orderDelayedMessages.js";
 
 function formatUsdt(n) {
   const v = Number(n);
@@ -88,6 +89,8 @@ export async function failPaymeeOrderInsufficientBalance(order, ctx, details) {
     `❌ Paymee #${orderId}: to'langan, yetkazilmadi — API balans yetarli emas` +
       (required_usdt != null ? ` (kerak ${formatUsdt(required_usdt)}, qolgan ${formatUsdt(balance_usdt)})` : "")
   );
+
+  await sendDelayedOrderNotify(pool, bot, orderId);
 
   return {
     success: false,

@@ -9,6 +9,7 @@ import {
   checkPaymeeFulfillment,
 } from "../paymeeClient/index.js";
 import { failPaymeeOrderInsufficientBalance } from "../paymeeClient/paidUndelivered.js";
+import { sendDelayedOrderNotify } from "../notifications/orderDelayedMessages.js";
 import { paymeePremiumSlotKey } from "./orderCreate.js";
 
 /**
@@ -133,6 +134,7 @@ export async function sendPremiumViaPaymee(order, ctx) {
             .catch(() => {});
         }
       }
+      await sendDelayedOrderNotify(pool, bot, orderId);
       throw err;
     }
 
