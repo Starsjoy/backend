@@ -12,19 +12,19 @@ const TEXTS = {
   uz: {
     sent: (product, to) => `✅ ${product} ${to}'ga muvaffaqiyatli yuborildi!`,
     payment: "💰 To'lov",
-    thanks: "Starsjoy'ni tanlaganingiz uchun rahmat! 💙",
+    thanks: "💙 Starsjoy'ni tanlaganingiz uchun rahmat!",
     admin: "Admin",
   },
   ru: {
     sent: (product, to) => `✅ ${product} — успешно отправлено ${to}!`,
     payment: "💰 Оплата",
-    thanks: "Спасибо, что выбрали Starsjoy! 💙",
+    thanks: "💙 Спасибо, что выбрали Starsjoy!",
     admin: "Админ",
   },
   en: {
     sent: (product, to) => `✅ ${product} successfully sent to ${to}!`,
     payment: "💰 Payment",
-    thanks: "Thank you for choosing Starsjoy! 💙",
+    thanks: "💙 Thank you for choosing Starsjoy!",
     admin: "Admin",
   },
 };
