@@ -99,6 +99,13 @@ import {
 import { sendDeliveredOrderNotify } from "./modules/notifications/orderDeliveredMessages.js";
 import { sendDelayedOrderNotify } from "./modules/notifications/orderDelayedMessages.js";
 import {
+  ensureRewardsTables,
+  isRewardOrder,
+  creditRewardsForOrder,
+  reconcileRedemptions,
+  registerRewardsRoutes,
+} from "./modules/rewards/index.js";
+import {
   ensureReviewRequestTable,
   scheduleReviewRequestAfterFirstPurchase,
   runReviewRequestJob,
@@ -3976,6 +3983,9 @@ async function sendPremiumToUser(orderId, recipientId, months) {
       // �📢 Kanalga xabar
       sendChannelNotification(orderId, 'premium').catch(err => console.error("Notification error:", err));
       sendDeliveredOrderNotify(pool, bot, orderId);
+      creditRewardsForOrder(pool, orderId).catch((err) =>
+        console.error("❌ Bonus yozishda xato:", err.message)
+      );
       return { status: "completed", transaction_id: data.transaction_id };
     }
     console.log("❌ Provider error:", data.error);
@@ -5677,138 +5687,10 @@ app.post("/api/referral/claim", authLimiter, telegramAuth, (req, res) => {
 // ======================
 // � REFERRAL WITHDRAW — Referral balansdan gift yechish
 // ======================
-app.post("/api/referral/withdraw", authLimiter, telegramAuth, async (req, res) => {
-  try {
-    const { giftId } = req.body;
-    
-    // Telegram user info
-    const tgUser = req.telegramUser;
-    const userId = tgUser?.id ? String(tgUser.id) : null;
-    const username = tgUser?.username;
-    
-    if (!userId || !username) {
-      return res.status(400).json({ error: "Telegram user ma'lumotlari topilmadi" });
-    }
-    if (!giftId) {
-      return res.status(400).json({ error: "giftId kerak" });
-    }
-    
-    // Gift ID tekshirish (minimum 50 stars)
-    const ALLOWED_GIFT_IDS_WITHDRAW = [
-      "5170144170496491616", "5170314324215857265",
-      "5170564780938756245", "6028601630662853006",
-      "5922558454332916696", "5801108895304779062",
-      "5800655655995968830", "5956217000635139069",
-      "5935895822435615975", "5969796561943660080",
-      "5168043875654172773",
-      "5170690322832818290", "5170521118301225164",
-    ];
-    const GIFT_STARS_WITHDRAW = {
-      "5170144170496491616": 50, "5170314324215857265": 50,
-      "5170564780938756245": 50, "6028601630662853006": 50,
-      "5922558454332916696": 50, "5801108895304779062": 50,
-      "5800655655995968830": 50, "5956217000635139069": 50,
-      "5935895822435615975": 50, "5969796561943660080": 50,
-      "5168043875654172773": 100,
-      "5170690322832818290": 100, "5170521118301225164": 100,
-    };
-    
-    if (!ALLOWED_GIFT_IDS_WITHDRAW.includes(giftId)) {
-      return res.status(400).json({ error: "Noto'g'ri gift ID" });
-    }
-    
-    const giftStars = GIFT_STARS_WITHDRAW[giftId];
-    if (!giftStars) {
-      return res.status(400).json({ error: "Gift narxi topilmadi" });
-    }
-    
-    // User balansini tekshirish
-    const userRes = await pool.query(
-      "SELECT referral_balance FROM users WHERE user_id = $1",
-      [userId]
-    );
-    
-    if (userRes.rows.length === 0) {
-      return res.status(404).json({ error: "User topilmadi" });
-    }
-    
-    const currentBalance = userRes.rows[0].referral_balance || 0;
-    if (currentBalance < giftStars) {
-      return res.status(400).json({ 
-        error: "Yetarli balans yo'q", 
-        required: giftStars,
-        current: currentBalance 
-      });
-    }
-    
-    // Transaction boshlaymiz
-    const client = await pool.connect();
-    let order;
-    try {
-      await client.query('BEGIN');
-      
-      // Balansni ATOMIK kamaytirish: shart UPDATE ichida — parallel so'rovlardan faqat
-      // balans yetganlari o'tadi (avval tekshiruv tranzaksiyadan tashqarida edi → ikki marta gift)
-      const debit = await client.query(
-        "UPDATE users SET referral_balance = referral_balance - $1 WHERE user_id = $2 AND referral_balance >= $1 RETURNING referral_balance",
-        [giftStars, userId]
-      );
-      if (!debit.rowCount) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: "Yetarli balans yo'q", required: giftStars });
-      }
-      
-      // Order yaratish (to'lov allaqachon qabul qilingan - referral balansdan)
-      const orderId = crypto.randomUUID();
-      const result = await client.query(
-        `INSERT INTO orders
-         (order_id, owner_user_id, recipient_username, recipient, order_type, type_amount, summ, payment_method, payment_status, status, gift_id, gift_anonymous, gift_comment, created_at)
-         VALUES ($1, $2, $3, $4, 'gift', $5, 0, 'referral', 'completed', 'pending', $6, false, 'Referral yechish', NOW())
-         RETURNING *`,
-        [
-          orderId,
-          userId,
-          username,
-          username,  // O'ziga yuboriladi
-          giftStars,
-          giftId,
-        ]
-      );
-      
-      await client.query('COMMIT');
-      order = result.rows[0];
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
-    
-    console.log(`🎁 Referral withdraw: #${order.id} | @${username} | ${giftStars}⭐ (gift: ${giftId})`);
-    
-    // Gift yuborish (userbot orqali)
-    sendGiftToUser(order);
-    
-    // Yangi balansni olish
-    const newBalanceRes = await pool.query(
-      "SELECT referral_balance FROM users WHERE user_id = $1",
-      [userId]
-    );
-    const newBalance = newBalanceRes.rows[0]?.referral_balance || 0;
-    
-    res.json({
-      success: true,
-      order_id: order.id,
-      gift_id: giftId,
-      stars: giftStars,
-      new_balance: newBalance,
-      message: "Gift yuborilmoqda..."
-    });
-    
-  } catch (err) {
-    console.error("❌ /api/referral/withdraw ERROR:", err);
-    res.status(500).json({ error: "Server xato" });
-  }
+// 🔒 O'chirilgan (2026-10-25): eski referal balansi tizimi to'xtatildi, balanslar nolga tushirildi.
+// Referal bonuslari endi "Bonuslar" bo'limida (modules/rewards).
+app.post("/api/referral/withdraw", authLimiter, telegramAuth, (req, res) => {
+  res.status(410).json({ error: "Eski referal balansi to'xtatilgan — Bonuslar bo'limidan foydalaning" });
 });
 // ======================
 // �🆕 USER LANGUAGE ENDPOINT
@@ -7343,6 +7225,9 @@ async function sendMissionGiftNotification(order, isFailed = false) {
 async function sendUnifiedChannelNotification(order, type, isFailed = false) {
   if (!bot) return;
 
+  // Bonus balansdan yechib olish — xabarlarni rewards moduli o'zi yuboradi (sotuv kanaliga tushmasin)
+  if (isRewardOrder(order)) return;
+
   // Bonus missiya sovg'alari alohida formatda, alohida kanalga
   if (String(order?.payment_method || "") === "bonus") {
     return sendMissionGiftNotification(order, isFailed);
@@ -7399,6 +7284,11 @@ async function sendUnifiedChannelNotification(order, type, isFailed = false) {
   } else {
     // 📩 Foydalanuvchiga "muvaffaqiyatli yuborildi" xabari (o'z tilida)
     await sendDeliveredOrderNotify(pool, bot, order.id);
+
+    // 🎁 Bonuslar: xaridorga bonus + birinchi xaridda taklif qilgan do'stga referal bonus
+    creditRewardsForOrder(pool, order.id).catch((err) =>
+      console.error("❌ Bonus yozishda xato:", err.message)
+    );
 
     scheduleReviewRequestAfterFirstPurchase(pool, order).catch((err) =>
       console.error("❌ Sharh so'rovi rejalashtirish:", err.message)
@@ -7833,6 +7723,30 @@ const missionCtx = {
 };
 
 registerMissionRoutes(app, missionCtx);
+
+// 🎁 Bonuslar: balans, almashtirish katalogi, avtomatik yechib olish
+const rewardsCtx = {
+  pool,
+  bot,
+  telegramAuth,
+  authLimiter,
+  sendDeliveredOrderNotify,
+  notifyOrdersChannel,
+  notifyErrorChannel: (text) =>
+    sendOrdersChannelMessage({ text, channelId: ERROR_LOG_CHANNEL_ID, bot, botToken: BOT_TOKEN }).catch(() => {}),
+  getStarsOrderType: () =>
+    getCachedSettings().stars_purchase_mode === "fragment" ? "stars_usdt" : "stars_paymee",
+  // Yetkazish mavjud yo'llar orqali: gift — userbot, stars — joriy rejim (Paymee / Fragment)
+  deliverRewardOrder: async (order) => {
+    if (order.order_type === "gift") return sendGiftToUser(order);
+    if (order.order_type === "stars_usdt") return sendStarsViaFragment(order, usdtStarsCtx);
+    return sendStarsViaPaymee(order, paymeeStarsCtx);
+  },
+};
+registerRewardsRoutes(app, rewardsCtx);
+setInterval(() => {
+  reconcileRedemptions(rewardsCtx).catch((e) => console.error("❌ Bonus reconcile:", e.message));
+}, 10 * 60 * 1000);
 validateMissionGifts(GIFT_STARS_MAP);
 
 registerAnalyticsRoutes(app, { pool, adminAuth });
@@ -7846,6 +7760,7 @@ async function bootstrapAppData() {
   await grandfatherExistingUserPreferences(pool);
   await ensureUserbotStarRefillsTable(pool);
   await ensureUserMissionsTable(pool);
+  await ensureRewardsTables(pool);
 }
 
 // ======================
