@@ -181,8 +181,10 @@ app.use((req, res, next) => {
 // bo'lgani uchun bitta to'lovni kutish 10 daqiqada limitni tugatib,
 // mijozning ekrani yangilanmay qolardi. Shuning uchun alohida limitga
 // chiqarildi.
+// Davriy (avtomatik) so'rovlar — umumiy 200/15daq limitiga sanalmaydi, o'z pollingLimiter'i bor.
+// Mobil operatorlarda ko'p user bitta IP ortida (CGNAT) — fon so'rovlari limitni yeb qo'ymasin.
 const POLLING_PATH_RE =
-  /^\/api\/(transactions\/|gift\/status\/|premium\/transactions\/|paymee-premium\/transactions\/)/;
+  /^\/api\/(transactions\/|gift\/status\/|premium\/transactions\/|paymee-premium\/transactions\/|usdt-premium\/transactions\/|rewards\/unseen|notifications\/unread\/)/;
 
 const isAdminPath = (req) => req.originalUrl.startsWith('/api/admin/');
 const isPollingPath = (req) => POLLING_PATH_RE.test(req.originalUrl);
