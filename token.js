@@ -2,6 +2,9 @@ import 'dotenv/config';
 import { Telegraf, Markup } from 'telegraf';
 import pg from 'pg';
 import { upsertUserFromTelegram } from './modules/users/upsertUser.js';
+import { linkReferrerOnSignup, parseReferralPayload } from './modules/users/referralLink.js';
+import { markUserSubscribed } from './modules/users/subscription.js';
+import { scheduleChannelInvite } from './modules/notifications/channelInvite.js';
 const { Pool } = pg;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -141,6 +144,19 @@ bot.start(async (ctx) => {
       console.log(
         `👤 Bot orqali yangi user ro'yxatdan o'tdi: ${userId} (${savedUsername || fullName})`
       );
+      // Referal havolasi (t.me/StarsjoyBot?start=ref_<kod>) — faqat YANGI userni bog'laymiz
+      const referralCode = parseReferralPayload(ctx.payload ?? ctx.startPayload);
+      if (referralCode) {
+        const referrer = await linkReferrerOnSignup(pool, {
+          userId,
+          username: savedUsername,
+          referralCode,
+        }).catch((err) => {
+          console.error("❌ Referal bog'lashda xato:", err.message);
+          return null;
+        });
+        if (referrer) console.log(`🔗 Referal bog'landi (bot): ${savedUsername} -> ${referrer}`);
+      }
     }
   } catch (err) {
     console.error("❌ Userni DB ga yozishda xato:", err.message || err);
@@ -162,13 +178,7 @@ bot.start(async (ctx) => {
     );
   }
 
-  // Majburiy obuna tekshirish
-  const subscribed = await isSubscribed(ctx, userId);
-  if (!subscribed) {
-    return await safeReply(ctx, getSubscribeText(), getSubscribeKeyboard());
-  }
-
-  // Obuna bo'lgan — davom etamiz
+  // Obuna MAJBURIY EMAS: hammaga darhol START
   await safeReply(
     ctx,
     getStartText(),
@@ -179,6 +189,19 @@ bot.start(async (ctx) => {
         
     ])
   );
+
+  // Kanalda bo'lsa — belgilaymiz (missiya/referal hisobi); bo'lmasa — ixtiyoriy taklif
+  // 1 soatdan keyin, userning tilida (server.js dagi navbat job'i yuboradi)
+  const subscribed = await isSubscribed(ctx, userId);
+  if (subscribed) {
+    await markUserSubscribed(pool, userId).catch((err) =>
+      console.error("❌ Obunani belgilashda xato:", err.message)
+    );
+  } else {
+    await scheduleChannelInvite(pool, userId).catch((err) =>
+      console.error("❌ Kanal taklifini rejalashtirishda xato:", err.message)
+    );
+  }
 });
 
 
@@ -198,68 +221,10 @@ bot.action('check_subscription', async (ctx) => {
     return;
   }
 
-  // Obuna bo'lgan — database-ga yozish va referral bonusni berish
-  try {
-    // User'ni topish va subscribe_user = true qilish
-    const userCheck = await pool.query(
-      'SELECT user_id, username, referrer_user_id, subscribe_user FROM users WHERE user_id = $1',
-      [String(userId)]
-    );
-
-    if (userCheck.rows.length > 0) {
-      const user = userCheck.rows[0];
-      
-      // Agar hali subscribe bo'lmagan bo'lsa
-      if (!user.subscribe_user) {
-        // subscribe_user = true qilish
-        await pool.query(
-          'UPDATE users SET subscribe_user = true WHERE user_id = $1',
-          [String(userId)]
-        );
-        console.log(`✅ User ${userId} subscribe_user = true qilindi`);
-
-        // Agar bu user referral request'ga ega bo'lsa - subscribe_referrer ni true qilish
-        try {
-          await pool.query(
-            "UPDATE referral_requests SET subscribe_referrer = true WHERE owner_user_id = $1 AND is_accepted = false AND rejected_at IS NULL",
-            [String(userId)]
-          );
-          console.log(`✅ Referral request updated: ${userId} kanalga obuna bo'ldi`);
-        } catch (err) {
-          console.error("⚠️ Update referral request subscribe status error:", err.message);
-        }
-
-        // Agar referrer orqali kelgan bo'lsa - referralni tasdiqlash
-        if (user.referrer_user_id) {
-          try {
-            const referrerResult = await pool.query(
-              'SELECT username FROM users WHERE user_id = $1',
-              [user.referrer_user_id]
-            );
-
-            if (referrerResult.rows.length > 0) {
-              const referrerUsername = referrerResult.rows[0].username;
-              const userName = user.username || String(userId);
-
-              // Referrer ni total_referrals ni oshirish (Bonus +2 berilmaydi)
-              await pool.query(
-                `UPDATE users 
-                 SET total_referrals = total_referrals + 1
-                 WHERE user_id = $1`,
-                [user.referrer_user_id]
-              );
-
-              console.log(`🎁 REFERRAL TASDIQLANDI: ${referrerUsername} ga yangi referral qo'shildi (${userName} kanalga obuna bo'ldi). Bonus berilmaydi.`);
-            }
-          } catch (bonusErr) {
-            console.error('❌ Subscribe referral update error:', bonusErr.message);
-          }
-        }
-      }
-    }
-  } catch (dbErr) {
-    console.error('❌ Database update error:', dbErr.message);
-  }
+  // Obuna bo'lgan — belgilash (umumiy modul: referral_requests + total_referrals, faqat birinchi marta)
+  await markUserSubscribed(pool, userId).catch((err) =>
+    console.error('❌ Obunani belgilashda xato:', err.message)
+  );
 
   // Eski xabarni o'chirish
   try {

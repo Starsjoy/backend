@@ -16,7 +16,7 @@ const TEXTS = {
     admin: "Admin",
   },
   ru: {
-    sent: (product, to) => `✅ ${product} — успешно отправлено ${to}!`,
+    sent: (product, to) => `✅ ${product}: успешно отправлено ${to}!`,
     payment: "💰 Оплата",
     thanks: "💙 Спасибо, что выбрали Starsjoy!",
     admin: "Админ",

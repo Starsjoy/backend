@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { getMissionByLevel, getMissions, getMissionVerifyMs, getMissionVerifyHours } from "./config.js";
 import { verifyMissionFriends } from "./verify.js";
+import { promoteSubscribedFriends } from "../users/subscription.js";
 import {
   attachOrder,
   cancelVerifyTimer,
@@ -38,6 +39,11 @@ export async function refreshMissionState(ctx, userId, { forceVerify = false } =
       await verifyMissionFriends(ctx, userId);
     }
   }
+
+  // Obuna majburiy emas — kanalga keyinroq qo'shilgan do'stlarni ham aniqlaymiz (cheklangan)
+  await promoteSubscribedFriends(ctx, userId, 15).catch((e) =>
+    console.error("⚠️ Do'stlar obunasini tekshirish:", e.message)
+  );
 
   const friends = await countSubscribedFriends(pool, userId);
 

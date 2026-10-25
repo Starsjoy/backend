@@ -42,6 +42,9 @@ import {
   registerSettingsRoutes,
 } from "./modules/settings/index.js";
 import { upsertUserFromTelegram } from "./modules/users/upsertUser.js";
+import { buildReferralLink } from "./modules/users/referralLink.js";
+import { markUserSubscribed } from "./modules/users/subscription.js";
+import { runChannelInviteJob } from "./modules/notifications/channelInvite.js";
 import {
   grandfatherExistingUserPreferences,
   getUserPreferences,
@@ -3983,7 +3986,7 @@ async function sendPremiumToUser(orderId, recipientId, months) {
       // �📢 Kanalga xabar
       sendChannelNotification(orderId, 'premium').catch(err => console.error("Notification error:", err));
       sendDeliveredOrderNotify(pool, bot, orderId);
-      creditRewardsForOrder(pool, orderId).catch((err) =>
+      creditRewardsForOrder({ pool, bot }, orderId).catch((err) =>
         console.error("❌ Bonus yozishda xato:", err.message)
       );
       return { status: "completed", transaction_id: data.transaction_id };
@@ -4337,6 +4340,57 @@ app.get("/api/admin/ping", adminAuth, (req, res) => {
   res.json({ success: true });
 });
 
+/**
+ * Admin ro'yxatidagi userlarga xarid va bonus statistikasi — sahifadagi userlar uchun
+ * BITTA yig'ma so'rov (har user uchun alohida so'rov emas). Faqat pullik, yetkazilgan xaridlar.
+ */
+async function attachAdminUserStats(rows) {
+  const ids = rows.map((r) => r.user_id).filter(Boolean).map(String);
+  if (!ids.length) return;
+  const [ord, led] = await Promise.all([
+    pool.query(
+      `SELECT owner_user_id AS uid,
+              COUNT(*)::int AS orders_count,
+              COALESCE(SUM(type_amount) FILTER (WHERE order_type LIKE 'stars%'), 0)::int AS stars_bought,
+              COALESCE(SUM(type_amount) FILTER (WHERE order_type LIKE 'premium%'), 0)::int AS premium_months,
+              COUNT(*) FILTER (WHERE order_type = 'gift')::int AS gifts_count,
+              COALESCE(SUM(summ), 0)::bigint AS total_spent,
+              MAX(created_at) AS last_order_at
+       FROM orders
+       WHERE owner_user_id = ANY($1::text[])
+         AND status IN ('completed', 'delivered') AND summ > 0
+         AND COALESCE(payment_method, '') NOT IN ('bonus', 'referral', 'admin_manual')
+       GROUP BY owner_user_id`,
+      [ids]
+    ),
+    pool.query(
+      `SELECT user_id AS uid,
+              COALESCE(SUM(delta) FILTER (WHERE kind IN ('purchase', 'referral', 'admin')), 0)::int AS bonus_earned,
+              COALESCE(SUM(delta) FILTER (WHERE kind = 'referral'), 0)::int AS bonus_from_referrals,
+              COALESCE(-SUM(delta) FILTER (WHERE kind = 'redeem'), 0)
+                - COALESCE(SUM(delta) FILTER (WHERE kind = 'refund'), 0) AS bonus_spent
+       FROM bonus_ledger WHERE user_id = ANY($1::text[]) GROUP BY user_id`,
+      [ids]
+    ),
+  ]);
+  const o = new Map(ord.rows.map((r) => [String(r.uid), r]));
+  const l = new Map(led.rows.map((r) => [String(r.uid), r]));
+  for (const row of rows) {
+    const a = o.get(String(row.user_id)) || {};
+    const b = l.get(String(row.user_id)) || {};
+    row.orders_count = a.orders_count || 0;
+    row.stars_bought = a.stars_bought || 0;
+    row.premium_months = a.premium_months || 0;
+    row.gifts_count = a.gifts_count || 0;
+    row.total_spent = Number(a.total_spent) || 0;
+    row.last_order_at = a.last_order_at || null;
+    row.bonus_balance = row.bonus_balance || 0;
+    row.bonus_earned = b.bonus_earned || 0;
+    row.bonus_from_referrals = b.bonus_from_referrals || 0;
+    row.bonus_spent = Number(b.bonus_spent) || 0;
+  }
+}
+
 app.get("/api/admin/users", adminAuth, async (req, res) => {
   try {
     const hasPagination =
@@ -4364,6 +4418,7 @@ app.get("/api/admin/users", adminAuth, async (req, res) => {
     listParams.push(hasPagination ? limit : LEGACY_CAP, offset);
     query += ` LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`;
     const result = await pool.query(query, listParams);
+    await attachAdminUserStats(result.rows);
 
     if (!hasPagination) {
       // Legacy: bare array qaytariladi (eski frontendlar uchun)
@@ -4375,7 +4430,9 @@ app.get("/api/admin/users", adminAuth, async (req, res) => {
       SELECT
         COUNT(*)::int AS total,
         COUNT(*) FILTER (WHERE created_at::date = CURRENT_DATE)::int AS today,
-        COALESCE(SUM(total_referrals), 0)::bigint AS total_referrals
+        COALESCE(SUM(total_referrals), 0)::bigint AS total_referrals,
+        COALESCE(SUM(bonus_balance), 0)::bigint AS bonus_total,
+        COUNT(*) FILTER (WHERE bonus_balance > 0)::int AS bonus_users
       FROM users
     `);
     const s = statsRes.rows[0] || {};
@@ -4383,6 +4440,8 @@ app.get("/api/admin/users", adminAuth, async (req, res) => {
       total: Number(s.total) || 0,
       today: Number(s.today) || 0,
       totalReferrals: Number(s.total_referrals) || 0,
+      bonusTotal: Number(s.bonus_total) || 0,
+      bonusUsers: Number(s.bonus_users) || 0,
     };
 
     // Filter uchun total
@@ -4858,55 +4917,9 @@ app.post("/api/user/subscribe-check", authLimiter, telegramAuth, async (req, res
       });
     }
 
-    // subscribe_user ni true qilish
-    await pool.query(
-      "UPDATE users SET subscribe_user = true WHERE user_id = $1",
-      [tgUserId]
-    );
-    
-    // 📝 Agar bu user referral request'ga ega bo'lsa - subscribe_referrer ni true qilish
-    try {
-      await pool.query(
-        "UPDATE referral_requests SET subscribe_referrer = true WHERE owner_user_id = $1 AND is_accepted = false AND rejected_at IS NULL",
-        [tgUserId]
-      );
-      console.log(`✅ Referral request updated: ${tgUserId} kanalga obuna bo'ldi`);
-    } catch (err) {
-      console.error("⚠️ Update referral request subscribe status error:", err.message);
-    }
-    
-    // Agar bu user referrer orqali kelgan bo'lsa - referral aktivlashdi
-    const referrerUserId = user.rows[0].referrer_user_id;
-    if (referrerUserId) {
-      console.log(`🎉 REFERRAL AKTIVLASHDI: User ${tgUserId} kanalga obuna bo'ldi. Referrer: ${referrerUserId}`);
-      
-      try {
-        // Referrer ma'lumotlarini olish
-        const referrerResult = await pool.query(
-          "SELECT username FROM users WHERE user_id = $1",
-          [referrerUserId]
-        );
-        if (referrerResult.rows.length > 0) {
-          const referrerUsername = referrerResult.rows[0].username;
-          const userName = user.rows[0].username || tgUserId;
-          
-          // Referrer ni total_referrals ni oshirish (Bonus +2 berilmaydi)
-          await pool.query(
-            `UPDATE users 
-             SET total_referrals = total_referrals + 1
-             WHERE user_id = $1`,
-            [referrerUserId]
-          );
-          
-          console.log(`🎁 REFERRAL TASDIQLANDI: ${referrerUsername} (${referrerUserId}) ning referali (${userName}) kanalga obuna bo'ldi. (Bonus bekor qilingan)`);
-        }
-      } catch (bonusErr) {
-        console.error("❌ Subscribe referral update error:", bonusErr.message);
-      }
-    } else {
-      console.log(`📢 User ${tgUserId} kanalga obuna bo'ldi`);
-    }
-    
+    // Belgilash — umumiy modul (referral_requests + total_referrals, faqat birinchi marta)
+    await markUserSubscribed(pool, tgUserId);
+
     res.json({ 
       success: true, 
       message: "Obuna tasdiqlandi!",
@@ -4953,7 +4966,8 @@ app.get("/api/referral/link/:user_id", telegramAuth, async (req, res) => {
     const userData = user.rows[0];
     
     // Telegram Mini App Link
-    const referralLink = `https://t.me/StarsjoyBot/starsjoy?startapp=${userData.referral_code}`;
+    // Bot /start orqali — do'st bot xabarlarini (buyurtma holati) ham oladi
+    const referralLink = buildReferralLink(userData.referral_code);
     res.json({
       name: userData.name,
       username: userData.username,
@@ -7286,7 +7300,7 @@ async function sendUnifiedChannelNotification(order, type, isFailed = false) {
     await sendDeliveredOrderNotify(pool, bot, order.id);
 
     // 🎁 Bonuslar: xaridorga bonus + birinchi xaridda taklif qilgan do'stga referal bonus
-    creditRewardsForOrder(pool, order.id).catch((err) =>
+    creditRewardsForOrder({ pool, bot }, order.id).catch((err) =>
       console.error("❌ Bonus yozishda xato:", err.message)
     );
 
@@ -7744,6 +7758,13 @@ const rewardsCtx = {
   },
 };
 registerRewardsRoutes(app, rewardsCtx);
+
+// 📢 Ixtiyoriy kanal taklifi — /start dan 1 soat keyin (navbat bazada, token.js yozadi)
+setInterval(() => {
+  runChannelInviteJob({ pool, bot, subscriptionChannel: SUBSCRIPTION_CHANNEL }).catch((e) =>
+    console.error("❌ Kanal taklifi job:", e.message)
+  );
+}, 60 * 1000);
 setInterval(() => {
   reconcileRedemptions(rewardsCtx).catch((e) => console.error("❌ Bonus reconcile:", e.message));
 }, 10 * 60 * 1000);

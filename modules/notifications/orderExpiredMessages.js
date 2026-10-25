@@ -8,7 +8,7 @@ const TEXTS = {
   uz: {
     currency: "so'm",
     body: " belgilangan vaqt ichida to'lov aniqlanmadi.",
-    paid: `• To'lagan bo'lsangiz chek skrinshotini va qabul qiluvchi usernameni ${SUPPORT_HANDLE} ga yuboring`,
+    paid: `♻️ To'lagan bo'lsangiz chek skrinshotini va qabul qiluvchi usernameni ${SUPPORT_HANDLE} ga yuboring`,
     admin: "Admin",
     retry: "🔄 Qayta buyurtma berish",
     support: "💬 Support",
@@ -18,7 +18,7 @@ const TEXTS = {
   ru: {
     currency: "сум",
     body: ": оплата не поступила в отведённое время.",
-    paid: `• Если вы оплатили, отправьте скриншот чека и username получателя в ${SUPPORT_HANDLE}`,
+    paid: `♻️ Если вы оплатили, отправьте скриншот чека и username получателя в ${SUPPORT_HANDLE}`,
     admin: "Админ",
     retry: "🔄 Оформить заново",
     support: "💬 Поддержка",
@@ -28,7 +28,7 @@ const TEXTS = {
   en: {
     currency: "UZS",
     body: ": payment was not detected within the allotted time.",
-    paid: `• If you have paid, send a screenshot of the receipt and the recipient's username to ${SUPPORT_HANDLE}`,
+    paid: `♻️ If you have paid, send a screenshot of the receipt and the recipient's username to ${SUPPORT_HANDLE}`,
     admin: "Admin",
     retry: "🔄 Order again",
     support: "💬 Support",
@@ -101,9 +101,8 @@ export function buildExpiredOrderMessage(order, language) {
   const lang = normalizeLanguage(language);
   const tr = TEXTS[lang];
   const text =
-    `⚠️ ${productLabel(order, tr)} — ${formatSum(order.summ, lang)} ${tr.currency}${tr.body}\n\n` +
-    `${tr.paid}\n\n` +
-    `${tr.admin}: ${SUPPORT_HANDLE}`;
+    `⚠️ ${productLabel(order, tr)} (${formatSum(order.summ, lang)} ${tr.currency})${tr.body}\n\n` +
+    `${tr.paid}`;
 
   return {
     text,

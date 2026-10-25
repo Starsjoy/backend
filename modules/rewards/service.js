@@ -10,18 +10,52 @@ import {
   rewardForOrder,
 } from "./config.js";
 import { applyLedgerEntry } from "./db.js";
-import { getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
+import { MINI_APP_URL, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
 import { escapeTelegramHtml } from "../usdtStars/fragmentNotify.js";
 
 /** Bonus yozilmaydigan to'lov turlari (tekin / ichki buyurtmalar) */
 const NON_PAID_METHODS = ["bonus", "referral", "admin_manual"];
 const DELIVERED = ["completed", "delivered"];
 
+const CREDIT_TEXTS = {
+  uz: {
+    buyer: (n) => `🎁 Sizga +${n} ⭐ bonus berildi!\n\nBonuslarni ilovadagi «Bonuslar» bo'limida ko'rasiz va sovg'alarga almashtirasiz.`,
+    friend: (n, u) => `👥 ${u ? `Do'stingiz @${u}` : "Do'stingiz"} xarid qildi, sizga +${n} ⭐ bonus berildi!\n\nBonuslarni ilovadagi «Bonuslar» bo'limida ko'rasiz.`,
+    button: "🎁 Bonuslar",
+  },
+  ru: {
+    buyer: (n) => `🎁 Вам начислено +${n} ⭐ бонуса!\n\nСмотрите их в разделе «Бонусы» в приложении и обменивайте на подарки.`,
+    friend: (n, u) => `👥 ${u ? `Ваш друг @${u}` : "Ваш друг"} сделал покупку, вам начислено +${n} ⭐ бонуса!\n\nСмотрите в разделе «Бонусы» в приложении.`,
+    button: "🎁 Бонусы",
+  },
+  en: {
+    buyer: (n) => `🎁 You've received +${n} ⭐ bonus!\n\nFind it in the «Rewards» section of the app and exchange it for gifts.`,
+    friend: (n, u) => `👥 ${u ? `Your friend @${u}` : "Your friend"} made a purchase, you've received +${n} ⭐ bonus!\n\nFind it in the «Rewards» section of the app.`,
+    button: "🎁 Rewards",
+  },
+};
+
+/** Bonus yozilgani haqida userga xabar (uning app tilida). Xato bo'lsa jim — bonus baribir yozilgan. */
+async function notifyCredit({ pool, bot }, userId, kind, points, friendUsername = null) {
+  if (!bot) return;
+  try {
+    const lang = await getUserAppLanguage(pool, userId);
+    const tr = CREDIT_TEXTS[lang] || CREDIT_TEXTS.uz;
+    const text = kind === "referral" ? tr.friend(points, friendUsername) : tr.buyer(points);
+    await bot.telegram.sendMessage(userId, text, {
+      reply_markup: { inline_keyboard: [[{ text: tr.button, url: MINI_APP_URL }]] },
+    });
+  } catch (err) {
+    console.error(`⚠️ Bonus xabari yuborilmadi (user=${userId}):`, err.message);
+  }
+}
+
 /**
  * Yetkazilgan buyurtma uchun xaridorga bonus + (birinchi xaridda) taklif qilgan do'stga referal bonus.
  * Idempotent: ref_key tufayli necha marta chaqirilsa ham 1 marta yoziladi.
  */
-export async function creditRewardsForOrder(pool, orderId) {
+export async function creditRewardsForOrder(ctx, orderId) {
+  const { pool } = ctx;
   if (!orderId) return;
   const r = await pool.query(
     `SELECT id, order_id, owner_user_id, order_type, type_amount, summ, payment_method, status
@@ -48,7 +82,11 @@ export async function creditRewardsForOrder(pool, orderId) {
         orderId: order.id,
         meta: { order_type: order.order_type, type_amount: order.type_amount },
       });
-      if (res) console.log(`🎁 Bonus +${points}⭐: user=${buyerId}, order=#${order.id}`);
+      if (res) {
+        console.log(`🎁 Bonus +${points}⭐: user=${buyerId}, order=#${order.id}`);
+        // "yuborildi" xabaridan keyin — ikkinchi xabar
+        await notifyCredit(ctx, buyerId, "purchase", points);
+      }
     }
   }
 
@@ -74,7 +112,10 @@ export async function creditRewardsForOrder(pool, orderId) {
     orderId: order.id,
     meta: { friend_username: u.rows[0]?.username || null, type_amount: order.type_amount },
   });
-  if (res) console.log(`🎁 Referal bonus +${referralPoints}⭐: referrer=${referrerId}, friend=${buyerId}, order=#${order.id}`);
+  if (res) {
+    console.log(`🎁 Referal bonus +${referralPoints}⭐: referrer=${referrerId}, friend=${buyerId}, order=#${order.id}`);
+    await notifyCredit(ctx, referrerId, "referral", referralPoints, friend.username || null);
+  }
 }
 
 export class RedeemError extends Error {
@@ -169,9 +210,9 @@ export async function createRedemption(pool, { userId, username, item, starsOrde
 }
 
 const REFUND_TEXTS = {
-  uz: (n) => `⚠️ Bonusni yuborib bo'lmadi — ${n}⭐ balansingizga qaytarildi.\n\nBirozdan keyin qayta urinib ko'ring yoki @StarsjoySupport ga yozing.`,
-  ru: (n) => `⚠️ Не удалось отправить бонус — ${n}⭐ возвращены на ваш баланс.\n\nПопробуйте позже или напишите в @StarsjoySupport.`,
-  en: (n) => `⚠️ We couldn't send your bonus — ${n}⭐ has been returned to your balance.\n\nPlease try again later or contact @StarsjoySupport.`,
+  uz: (n) => `⚠️ Bonusni yuborib bo'lmadi. ${n}⭐ balansingizga qaytarildi.\n\nBirozdan keyin qayta urinib ko'ring yoki @StarsjoySupport ga yozing.`,
+  ru: (n) => `⚠️ Не удалось отправить бонус. ${n}⭐ возвращены на ваш баланс.\n\nПопробуйте позже или напишите в @StarsjoySupport.`,
+  en: (n) => `⚠️ We couldn't send your bonus. ${n}⭐ has been returned to your balance.\n\nPlease try again later or contact @StarsjoySupport.`,
 };
 
 function itemLabel(order) {
@@ -220,7 +261,7 @@ export async function refundRedemption(ctx, orderId, { allowedStatuses = ["faile
     /* ignore */
   }
   notifyErrorChannel?.(
-    `⚠️ <b>Bonus yetkazilmadi — balansga qaytarildi</b>\n\n` +
+    `⚠️ <b>Bonus yetkazilmadi, balansga qaytarildi</b>\n\n` +
       `📦 Order: #${order.id}\n` +
       `👤 @${escapeTelegramHtml(order.recipient_username)}\n` +
       `💫 ${escapeTelegramHtml(itemLabel(order))} (${cost}⭐)`
@@ -252,7 +293,7 @@ export async function finalizeRedemption(ctx, orderId) {
       `🎁 <b>User bonus oldi!</b>\n\n` +
         `📦 Order: #${order.id}\n` +
         `👤 ${who}\n` +
-        `💫 ${escapeTelegramHtml(itemLabel(order))} — bonus balansdan\n` +
+        `💫 ${escapeTelegramHtml(itemLabel(order))} (bonus balansdan)\n` +
         `✅ Status: Yetkazildi`
     );
     await sendDeliveredOrderNotify?.(pool, bot, order.id);

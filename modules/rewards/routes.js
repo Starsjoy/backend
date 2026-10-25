@@ -7,6 +7,7 @@ import {
   normalizeRecipientUsername,
 } from "./config.js";
 import { getBalance, getLedger, markSeen } from "./db.js";
+import { buildReferralLink } from "../users/referralLink.js";
 import { RedeemError, createRedemption, finalizeRedemption } from "./service.js";
 
 const RULES = {
@@ -68,7 +69,7 @@ export function registerRewardsRoutes(app, ctx) {
         })),
         ledger,
         active_redemption: active.rows[0] || null,
-        referral_link: code ? `https://t.me/StarsjoyBot/starsjoy?startapp=${code}` : null,
+        referral_link: buildReferralLink(code),
         has_username: Boolean(tgUsername(req)),
       });
     } catch (err) {
