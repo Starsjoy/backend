@@ -64,14 +64,16 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth }) {
 
   app.get("/api/admin/rewards/ledger", adminAuth, async (req, res) => {
     try {
-      const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 30));
+      const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 10));
       const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
       const kind = KINDS.includes(req.query.kind) ? req.query.kind : null;
       const seen = req.query.seen === "seen" ? true : req.query.seen === "unseen" ? false : null;
       const search = String(req.query.search || "").trim().replace(/^@/, "");
+      const userId = String(req.query.user_id || "").trim();
 
       const where = [];
       const params = [];
+      if (userId) { params.push(userId); where.push(`l.user_id = $${params.length}`); }
       if (kind) { params.push(kind); where.push(`l.kind = $${params.length}`); }
       if (seen !== null) { params.push(seen); where.push(`l.seen = $${params.length} AND l.delta > 0`); }
       if (search) {
@@ -99,6 +101,101 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth }) {
       res.json({ success: true, entries: rows.rows, total: total.rows[0].c, limit, offset });
     } catch (err) {
       console.error("❌ /api/admin/rewards/ledger:", err.message);
+      res.status(500).json({ error: "Server xatosi" });
+    }
+  });
+
+  /** Bonusi bor (yoki bo'lgan) userlar — balans bo'yicha, sahifalab */
+  app.get("/api/admin/rewards/users", adminAuth, async (req, res) => {
+    try {
+      const limit = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 10));
+      const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+      const search = String(req.query.search || "").trim().replace(/^@/, "");
+      const params = [];
+      let searchSql = "";
+      if (search) {
+        params.push(`%${search}%`);
+        searchSql = `AND (u.username ILIKE $1 OR u.user_id ILIKE $1 OR u.name ILIKE $1)`;
+      }
+      const base = `
+        FROM users u
+        JOIN (
+          SELECT user_id,
+                 COALESCE(SUM(delta) FILTER (WHERE kind = 'purchase'), 0)::int AS earned_purchase,
+                 COALESCE(SUM(delta) FILTER (WHERE kind = 'referral'), 0)::int AS earned_referral,
+                 COALESCE(-SUM(delta) FILTER (WHERE kind = 'redeem'), 0)::int AS spent,
+                 COUNT(*) FILTER (WHERE seen = false AND delta > 0)::int AS unseen_count,
+                 COALESCE(SUM(delta) FILTER (WHERE seen = false AND delta > 0), 0)::int AS unseen_stars,
+                 MAX(created_at) AS last_at
+          FROM bonus_ledger GROUP BY user_id
+        ) l ON l.user_id = u.user_id
+        WHERE TRUE ${searchSql}`;
+      const [rows, total] = await Promise.all([
+        pool.query(
+          `SELECT u.user_id, u.username, u.name, u.bonus_balance, l.*
+           ${base}
+           ORDER BY u.bonus_balance DESC, l.last_at DESC
+           LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+          [...params, limit, (page - 1) * limit]
+        ),
+        pool.query(`SELECT COUNT(*)::int AS c ${base}`, params),
+      ]);
+      res.json({ success: true, users: rows.rows, total: total.rows[0].c, page, limit });
+    } catch (err) {
+      console.error("❌ /api/admin/rewards/users:", err.message);
+      res.status(500).json({ error: "Server xatosi" });
+    }
+  });
+
+  /** Bitta userning bonus profili */
+  app.get("/api/admin/rewards/user/:userId", adminAuth, async (req, res) => {
+    try {
+      const uid = String(req.params.userId || "").trim();
+      const user = await pool.query(
+        `SELECT user_id, username, name, language, bonus_balance, referrer_user_id, created_at FROM users WHERE user_id = $1`,
+        [uid]
+      );
+      if (!user.rowCount) return res.status(404).json({ error: "User topilmadi" });
+      const [led, ord, ref, referrer] = await Promise.all([
+        pool.query(
+          `SELECT COALESCE(SUM(delta) FILTER (WHERE kind = 'purchase'), 0)::int AS earned_purchase,
+                  COALESCE(SUM(delta) FILTER (WHERE kind = 'referral'), 0)::int AS earned_referral,
+                  COALESCE(-SUM(delta) FILTER (WHERE kind = 'redeem'), 0)::int AS spent,
+                  COUNT(*) FILTER (WHERE kind = 'redeem')::int AS redeem_count,
+                  COALESCE(SUM(delta) FILTER (WHERE kind = 'refund'), 0)::int AS refunded,
+                  COUNT(*) FILTER (WHERE seen = false AND delta > 0)::int AS unseen_count,
+                  COALESCE(SUM(delta) FILTER (WHERE seen = false AND delta > 0), 0)::int AS unseen_stars,
+                  COUNT(*)::int AS entries
+           FROM bonus_ledger WHERE user_id = $1`,
+          [uid]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS orders_count,
+                  COALESCE(SUM(type_amount) FILTER (WHERE order_type LIKE 'stars%'), 0)::int AS stars_bought,
+                  COALESCE(SUM(type_amount) FILTER (WHERE order_type LIKE 'premium%'), 0)::int AS premium_months,
+                  COUNT(*) FILTER (WHERE order_type = 'gift')::int AS gifts_count,
+                  COALESCE(SUM(summ), 0)::bigint AS total_spent,
+                  MAX(created_at) AS last_order_at
+           FROM orders
+           WHERE owner_user_id = $1 AND status IN ('completed', 'delivered') AND summ > 0
+             AND COALESCE(payment_method, '') NOT IN ('bonus', 'referral', 'admin_manual')`,
+          [uid]
+        ),
+        pool.query(`SELECT COUNT(*)::int AS friends FROM users WHERE referrer_user_id = $1`, [uid]),
+        user.rows[0].referrer_user_id
+          ? pool.query(`SELECT user_id, username FROM users WHERE user_id = $1`, [String(user.rows[0].referrer_user_id)])
+          : Promise.resolve({ rows: [] }),
+      ]);
+      res.json({
+        success: true,
+        user: user.rows[0],
+        bonus: led.rows[0],
+        purchases: { ...ord.rows[0], total_spent: Number(ord.rows[0].total_spent) || 0 },
+        friends: ref.rows[0].friends,
+        referrer: referrer.rows[0] || null,
+      });
+    } catch (err) {
+      console.error("❌ /api/admin/rewards/user:", err.message);
       res.status(500).json({ error: "Server xatosi" });
     }
   });
