@@ -107,6 +107,7 @@ import {
   creditRewardsForOrder,
   reconcileRedemptions,
   registerRewardsRoutes,
+  registerRewardsAdminRoutes,
 } from "./modules/rewards/index.js";
 import {
   ensureReviewRequestTable,
@@ -4413,7 +4414,8 @@ app.get("/api/admin/users", adminAuth, async (req, res) => {
       whereSql = ` WHERE username ILIKE $1 OR referral_code ILIKE $2`;
     }
 
-    let query = `SELECT * FROM users${whereSql} ORDER BY id DESC`;
+    // Bonus balansi katta userlar tepada, teng bo'lsa — yangilari oldin
+    let query = `SELECT * FROM users${whereSql} ORDER BY bonus_balance DESC, id DESC`;
     const listParams = params.slice();
     listParams.push(hasPagination ? limit : LEGACY_CAP, offset);
     query += ` LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`;
@@ -7758,6 +7760,7 @@ const rewardsCtx = {
   },
 };
 registerRewardsRoutes(app, rewardsCtx);
+registerRewardsAdminRoutes(app, { pool, adminAuth });
 
 // 📢 Ixtiyoriy kanal taklifi — /start dan 1 soat keyin (navbat bazada, token.js yozadi)
 setInterval(() => {
