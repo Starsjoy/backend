@@ -5394,8 +5394,11 @@ app.get("/api/admin/referral-requests", adminAuth, async (req, res) => {
 app.post("/api/referral-requests", telegramAuth, async (req, res) => {
   try {
     const { referrer_username } = req.body;
-    const owner_user_id = req.user.id;
-    const owner_username = req.user.username;
+    const owner_user_id = req.telegramUser?.id ? String(req.telegramUser.id) : null;
+    const owner_username = req.telegramUser?.username || null;
+    if (!owner_user_id) {
+      return res.status(401).json({ error: "Telegram autentifikatsiya kerak" });
+    }
     
     if (!referrer_username) {
       return res.status(400).json({ error: "Referrer username kerak" });
@@ -5666,50 +5669,10 @@ app.post("/api/admin/user/:userId/remove-referrer", adminAuth, async (req, res) 
 });
 
 // 7️⃣ Original claim endpoint (Admin uchun)
-app.post("/api/referral/claim", authLimiter, telegramAuth, async (req, res) => {
-  try {
-    const { username } = req.body;
-    if (!username)
-      return res.status(400).json({ error: "username kerak" });
-    const clean = username.startsWith("@")
-      ? username.slice(1)
-      : username;
-    // Check user existence
-    const user = await pool.query(
-      "SELECT referral_balance FROM users WHERE username = $1",
-      [clean]
-    );
-    if (user.rows.length === 0) {
-      return res.status(404).json({ error: "User topilmadi" });
-    }
-    const balance = user.rows[0].referral_balance;
-    if (balance < 50) {
-      return res.status(400).json({
-        error: "Yetarli balans yo'q (kamida 50 star kerak)",
-        current_balance: balance,
-      });
-    }
-    // 50 star yechish
-    const claimedAmount = Math.floor(balance / 50) * 50;
-    const remaining = balance - claimedAmount;
-    await pool.query(
-      `UPDATE users 
-       SET referral_balance = $1
-       WHERE username = $2`,
-      [remaining, clean]
-    );
-    console.log(
-      `✅ ${clean} referral balansdan ${claimedAmount} star yechdi. Qolgan: ${remaining}`
-    );
-    res.json({
-      success: true,
-      claimed_amount: claimedAmount,
-      remaining_balance: remaining,
-    });
-  } catch (err) {
-    console.error("❌ /api/referral/claim ERROR:", err);
-    res.status(500).json({ error: "Server xato" });
-  }
+// 🔒 O'chirilgan: so'rov tanasidagi username bo'yicha ISTALGAN userning referal balansini
+// nolga tushirish mumkin edi (IDOR) va hech narsa yetkazmasdi. Frontend ishlatmaydi.
+app.post("/api/referral/claim", authLimiter, telegramAuth, (req, res) => {
+  res.status(410).json({ error: "Bu endpoint o'chirilgan" });
 });
 // ======================
 // � REFERRAL WITHDRAW — Referral balansdan gift yechish
@@ -5784,11 +5747,16 @@ app.post("/api/referral/withdraw", authLimiter, telegramAuth, async (req, res) =
     try {
       await client.query('BEGIN');
       
-      // Balansni kamaytirish
-      await client.query(
-        "UPDATE users SET referral_balance = referral_balance - $1 WHERE user_id = $2",
+      // Balansni ATOMIK kamaytirish: shart UPDATE ichida — parallel so'rovlardan faqat
+      // balans yetganlari o'tadi (avval tekshiruv tranzaksiyadan tashqarida edi → ikki marta gift)
+      const debit = await client.query(
+        "UPDATE users SET referral_balance = referral_balance - $1 WHERE user_id = $2 AND referral_balance >= $1 RETURNING referral_balance",
         [giftStars, userId]
       );
+      if (!debit.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: "Yetarli balans yo'q", required: giftStars });
+      }
       
       // Order yaratish (to'lov allaqachon qabul qilingan - referral balansdan)
       const orderId = crypto.randomUUID();
