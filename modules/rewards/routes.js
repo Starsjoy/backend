@@ -78,6 +78,22 @@ export function registerRewardsRoutes(app, ctx) {
     }
   });
 
+  // Pastki menyudagi "Bonuslar" belgisi uchun — hali "Olish" bosilmagan bonuslar soni (yengil COUNT)
+  app.get("/api/rewards/unseen", telegramAuth, async (req, res) => {
+    const userId = tgUserId(req);
+    if (!userId) return res.status(401).json({ error: "Telegram autentifikatsiya kerak" });
+    try {
+      const r = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM bonus_ledger WHERE user_id = $1 AND seen = false AND delta > 0`,
+        [userId]
+      );
+      res.json({ count: r.rows[0]?.n || 0 });
+    } catch (err) {
+      console.error("❌ /api/rewards/unseen:", err.message);
+      res.status(500).json({ error: "Server xatosi" });
+    }
+  });
+
   app.post("/api/rewards/seen", telegramAuth, async (req, res) => {
     const userId = tgUserId(req);
     const ledgerId = Number(req.body?.ledger_id);
