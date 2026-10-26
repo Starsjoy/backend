@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { REWARD_ORDER_PREFIX } from "./config.js";
-import { applyLedgerEntry } from "./db.js";
+import { applyLedgerEntry, deductBalance } from "./db.js";
 import { MINI_APP_URL, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
 import { escapeTelegramHtml } from "../usdtStars/fragmentNotify.js";
 
@@ -18,7 +18,7 @@ const GRANT_TEXTS = {
  *   GET /api/admin/rewards/overview — umumiy statistika
  *   GET /api/admin/rewards/ledger   — har bir yozuv (filtr, qidiruv, sahifalash)
  */
-const KINDS = ["purchase", "referral", "redeem", "refund", "admin"];
+const KINDS = ["purchase", "referral", "redeem", "refund", "admin", "deduct"];
 
 export function registerRewardsAdminRoutes(app, { pool, adminAuth, bot, notifyErrorChannel }) {
   /** Admin userga bonus beradi: darhol balansga, userga xabar, xizmat kanaliga audit */
@@ -74,6 +74,51 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth, bot, notifyEr
     }
   });
 
+  /**
+   * Admin user balansidan ayiradi ({ amount }) yoki hammasini nolga tushiradi ({ all: true }).
+   * Userga xabar YUBORILMAYDI va yozuv uning tarixida ko'rinmaydi — faqat xizmat kanaliga audit.
+   */
+  app.post("/api/admin/rewards/user/:userId/deduct", adminAuth, async (req, res) => {
+    try {
+      const uid = String(req.params.userId || "").trim();
+      const all = req.body?.all === true;
+      const amount = all ? null : Number(req.body?.amount);
+      const reason = String(req.body?.reason || "").trim().slice(0, 200);
+      if (!all && (!Number.isInteger(amount) || amount < 1)) {
+        return res.status(400).json({ error: "Miqdor 1 dan katta butun son bo'lishi kerak" });
+      }
+      const u = await pool.query(`SELECT user_id, username, bonus_balance FROM users WHERE user_id = $1`, [uid]);
+      if (!u.rowCount) return res.status(404).json({ error: "User topilmadi" });
+      if (!all && amount > u.rows[0].bonus_balance) {
+        return res.status(400).json({ error: `Balansda faqat ${u.rows[0].bonus_balance} ⭐ bor` });
+      }
+
+      const admin = req.adminUser || {};
+      const result = await deductBalance(pool, {
+        userId: uid,
+        amount,
+        refKey: `deduct:${crypto.randomUUID()}`,
+        meta: { reason: reason || null, all, admin_id: admin.id ? String(admin.id) : null, admin_username: admin.username || null },
+      });
+      if (!result) return res.status(404).json({ error: "User topilmadi" });
+      if (!result.deducted) return res.status(400).json({ error: "Balans allaqachon 0" });
+
+      console.log(`🛠 Admin ayirdi: @${admin.username || admin.id} → user=${uid} −${result.deducted}⭐${all ? " (nolga)" : ""} (${reason || "sababsiz"})`);
+
+      notifyErrorChannel?.(
+        `🛠 <b>Admin bonusni ${all ? "nolga tushirdi" : "ayirdi"}</b>\n\n` +
+          `👮 @${escapeTelegramHtml(admin.username || String(admin.id || "?"))} → 👤 @${escapeTelegramHtml(u.rows[0].username || uid)}\n` +
+          `💫 −${result.deducted} ⭐ · yangi balans ${result.balance} ⭐\n` +
+          (reason ? `📝 ${escapeTelegramHtml(reason)}` : "📝 sababsiz")
+      );
+
+      res.json({ success: true, deducted: result.deducted, balance: result.balance, ledger_id: result.ledgerId });
+    } catch (err) {
+      console.error("❌ /api/admin/rewards/deduct:", err.message);
+      res.status(500).json({ error: "Server xatosi" });
+    }
+  });
+
   app.get("/api/admin/rewards/overview", adminAuth, async (_req, res) => {
     try {
       const [totals, periods, unseen, items, top] = await Promise.all([
@@ -84,6 +129,7 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth, bot, notifyEr
             COALESCE(SUM(delta) FILTER (WHERE kind = 'purchase'), 0)::int AS earned_purchase,
             COALESCE(SUM(delta) FILTER (WHERE kind = 'referral'), 0)::int AS earned_referral,
             COALESCE(SUM(delta) FILTER (WHERE kind = 'admin'), 0)::int AS earned_admin,
+            COALESCE(-SUM(delta) FILTER (WHERE kind = 'deduct'), 0)::int AS deducted,
             COALESCE(-SUM(delta) FILTER (WHERE kind = 'redeem'), 0)::int AS redeemed,
             COALESCE(SUM(delta) FILTER (WHERE kind = 'refund'), 0)::int AS refunded,
             COUNT(*) FILTER (WHERE kind = 'redeem')::int AS redeem_count,
@@ -229,6 +275,7 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth, bot, notifyEr
           `SELECT COALESCE(SUM(delta) FILTER (WHERE kind = 'purchase'), 0)::int AS earned_purchase,
                   COALESCE(SUM(delta) FILTER (WHERE kind = 'referral'), 0)::int AS earned_referral,
                   COALESCE(SUM(delta) FILTER (WHERE kind = 'admin'), 0)::int AS earned_admin,
+                  COALESCE(-SUM(delta) FILTER (WHERE kind = 'deduct'), 0)::int AS deducted,
                   COALESCE(-SUM(delta) FILTER (WHERE kind = 'redeem'), 0)::int AS spent,
                   COUNT(*) FILTER (WHERE kind = 'redeem')::int AS redeem_count,
                   COALESCE(SUM(delta) FILTER (WHERE kind = 'refund'), 0)::int AS refunded,

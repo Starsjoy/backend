@@ -6,6 +6,7 @@
  *   referral:<userId> — do'stning birinchi xaridi (umrida 1 marta)
  *   redeem:<uuid>     — yechib olish (manfiy)
  *   refund:<orderId>  — yetkazilmagan yechib olishni qaytarish
+ *   deduct:<uuid>     — admin ayirgan/nolga tushirgan (manfiy, userga ko'rinmaydi)
  */
 
 export async function ensureRewardsTables(pool) {
@@ -91,6 +92,48 @@ export async function applyLedgerEntry(pool, { userId, delta, kind, refKey, orde
   }
 }
 
+/**
+ * Admin balansdan ayiradi (amount=null bo'lsa — hammasini nolga). Balans qatori qulflanadi,
+ * shuning uchun parallel xarid/yechib olish bilan to'qnashmaydi va manfiyga tushmaydi.
+ * @returns {Promise<{ledgerId:number|null, deducted:number, balance:number}|null>} user topilmasa null
+ */
+export async function deductBalance(pool, { userId, amount = null, refKey, meta = null }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const cur = await client.query(
+      `SELECT bonus_balance FROM users WHERE user_id = $1 FOR UPDATE`,
+      [String(userId)]
+    );
+    if (!cur.rowCount) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    const balance = cur.rows[0].bonus_balance;
+    const deducted = amount === null ? balance : Math.min(amount, balance);
+    if (deducted <= 0) {
+      await client.query("ROLLBACK");
+      return { ledgerId: null, deducted: 0, balance };
+    }
+    const ins = await client.query(
+      `INSERT INTO bonus_ledger (user_id, delta, kind, ref_key, meta, seen)
+       VALUES ($1, $2, 'deduct', $3, $4, true) RETURNING id`,
+      [String(userId), -deducted, refKey, meta]
+    );
+    const upd = await client.query(
+      `UPDATE users SET bonus_balance = bonus_balance - $1 WHERE user_id = $2 RETURNING bonus_balance`,
+      [deducted, String(userId)]
+    );
+    await client.query("COMMIT");
+    return { ledgerId: ins.rows[0].id, deducted, balance: upd.rows[0].bonus_balance };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export async function getBalance(pool, userId) {
   const r = await pool.query(`SELECT bonus_balance FROM users WHERE user_id = $1`, [String(userId)]);
   return r.rows[0]?.bonus_balance ?? 0;
@@ -103,7 +146,8 @@ export async function getLedger(pool, userId, limit = 30) {
      FROM bonus_ledger bl
      -- Faqat O'Z xaridi: referal yozuvining order_id si do'stniki — uning qabul qiluvchisi ko'rinmasin
      LEFT JOIN orders o ON o.id = bl.order_id AND bl.kind = 'purchase' AND o.owner_user_id = bl.user_id
-     WHERE bl.user_id = $1 ORDER BY bl.id DESC LIMIT $2`,
+     -- Admin ayirishlari (deduct) userga ko'rinmaydi
+     WHERE bl.user_id = $1 AND bl.kind <> 'deduct' ORDER BY bl.id DESC LIMIT $2`,
     [String(userId), limit]
   );
   return r.rows;
