@@ -1,4 +1,17 @@
+import crypto from "crypto";
 import { REWARD_ORDER_PREFIX } from "./config.js";
+import { applyLedgerEntry } from "./db.js";
+import { MINI_APP_URL, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
+import { escapeTelegramHtml } from "../usdtStars/fragmentNotify.js";
+
+/** Bitta admin bonusining yuqori chegarasi (tasodifiy ortiqcha raqamdan himoya) */
+const ADMIN_GRANT_MAX = 1000;
+
+const GRANT_TEXTS = {
+  uz: { title: (n) => `🎁 Admin tomonidan sizga +${n} ⭐ bonus berildi!`, reason: "Sabab", body: "Bonuslarni ilovadagi «Bonuslar» bo'limida ko'rasiz va sovg'alarga almashtirasiz.", button: "🎁 Bonuslar" },
+  ru: { title: (n) => `🎁 Админ начислил вам +${n} ⭐ бонуса!`, reason: "Причина", body: "Смотрите их в разделе «Бонусы» в приложении и обменивайте на подарки.", button: "🎁 Бонусы" },
+  en: { title: (n) => `🎁 The admin has given you +${n} ⭐ bonus!`, reason: "Reason", body: "Find it in the «Rewards» section of the app and exchange it for gifts.", button: "🎁 Rewards" },
+};
 
 /**
  * Admin panel "Bonuslar" sahifasi — faqat o'qish.
@@ -7,7 +20,60 @@ import { REWARD_ORDER_PREFIX } from "./config.js";
  */
 const KINDS = ["purchase", "referral", "redeem", "refund", "admin"];
 
-export function registerRewardsAdminRoutes(app, { pool, adminAuth }) {
+export function registerRewardsAdminRoutes(app, { pool, adminAuth, bot, notifyErrorChannel }) {
+  /** Admin userga bonus beradi: darhol balansga, userga xabar, xizmat kanaliga audit */
+  app.post("/api/admin/rewards/user/:userId/grant", adminAuth, async (req, res) => {
+    try {
+      const uid = String(req.params.userId || "").trim();
+      const amount = Number(req.body?.amount);
+      const reason = String(req.body?.reason || "").trim().slice(0, 200);
+      if (!Number.isInteger(amount) || amount < 1 || amount > ADMIN_GRANT_MAX) {
+        return res.status(400).json({ error: `Miqdor 1 dan ${ADMIN_GRANT_MAX} gacha butun son bo'lishi kerak` });
+      }
+      const u = await pool.query(`SELECT user_id, username FROM users WHERE user_id = $1`, [uid]);
+      if (!u.rowCount) return res.status(404).json({ error: "User topilmadi" });
+
+      const admin = req.adminUser || {};
+      const result = await applyLedgerEntry(pool, {
+        userId: uid,
+        delta: amount,
+        kind: "admin",
+        refKey: `admin:${crypto.randomUUID()}`,
+        meta: { reason: reason || null, admin_id: admin.id ? String(admin.id) : null, admin_username: admin.username || null },
+      });
+      if (!result) return res.status(500).json({ error: "Bonus yozilmadi" });
+
+      console.log(`🛠 Admin bonus: @${admin.username || admin.id} → user=${uid} +${amount}⭐ (${reason || "sababsiz"})`);
+
+      // Userga xabar (uning app tilida)
+      if (bot) {
+        try {
+          const lang = await getUserAppLanguage(pool, uid);
+          const tr = GRANT_TEXTS[lang] || GRANT_TEXTS.uz;
+          const text = `${tr.title(amount)}\n\n${reason ? `${tr.reason}: ${reason}\n\n` : ""}${tr.body}`;
+          await bot.telegram.sendMessage(uid, text, {
+            reply_markup: { inline_keyboard: [[{ text: tr.button, url: MINI_APP_URL }]] },
+          });
+        } catch (err) {
+          console.error(`⚠️ Admin bonus xabari yuborilmadi (user=${uid}):`, err.message);
+        }
+      }
+
+      // Audit: qaysi admin, kimga, qancha
+      notifyErrorChannel?.(
+        `🛠 <b>Admin bonus berdi</b>\n\n` +
+          `👮 @${escapeTelegramHtml(admin.username || String(admin.id || "?"))} → 👤 @${escapeTelegramHtml(u.rows[0].username || uid)}\n` +
+          `💫 +${amount} ⭐ · yangi balans ${result.balance} ⭐\n` +
+          (reason ? `📝 ${escapeTelegramHtml(reason)}` : "📝 sababsiz")
+      );
+
+      res.json({ success: true, balance: result.balance, ledger_id: result.ledgerId });
+    } catch (err) {
+      console.error("❌ /api/admin/rewards/grant:", err.message);
+      res.status(500).json({ error: "Server xatosi" });
+    }
+  });
+
   app.get("/api/admin/rewards/overview", adminAuth, async (_req, res) => {
     try {
       const [totals, periods, unseen, items, top] = await Promise.all([
@@ -17,6 +83,7 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth }) {
             (SELECT COUNT(*)::int FROM users WHERE bonus_balance > 0) AS users_with_balance,
             COALESCE(SUM(delta) FILTER (WHERE kind = 'purchase'), 0)::int AS earned_purchase,
             COALESCE(SUM(delta) FILTER (WHERE kind = 'referral'), 0)::int AS earned_referral,
+            COALESCE(SUM(delta) FILTER (WHERE kind = 'admin'), 0)::int AS earned_admin,
             COALESCE(-SUM(delta) FILTER (WHERE kind = 'redeem'), 0)::int AS redeemed,
             COALESCE(SUM(delta) FILTER (WHERE kind = 'refund'), 0)::int AS refunded,
             COUNT(*) FILTER (WHERE kind = 'redeem')::int AS redeem_count,
@@ -89,6 +156,7 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth }) {
         pool.query(
           `SELECT l.id, l.delta, l.kind, l.seen, l.created_at, l.user_id, u.username,
                   l.meta->>'item' AS item, l.meta->>'friend_username' AS friend_username,
+                  l.meta->>'reason' AS reason, l.meta->>'admin_username' AS admin_username,
                   o.id AS order_id, o.order_type, o.type_amount, o.summ, o.recipient_username,
                   o.status AS order_status, (o.order_id LIKE '${REWARD_ORDER_PREFIX}%') AS is_reward_order
            ${from} ${whereSql}
@@ -160,6 +228,7 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth }) {
         pool.query(
           `SELECT COALESCE(SUM(delta) FILTER (WHERE kind = 'purchase'), 0)::int AS earned_purchase,
                   COALESCE(SUM(delta) FILTER (WHERE kind = 'referral'), 0)::int AS earned_referral,
+                  COALESCE(SUM(delta) FILTER (WHERE kind = 'admin'), 0)::int AS earned_admin,
                   COALESCE(-SUM(delta) FILTER (WHERE kind = 'redeem'), 0)::int AS spent,
                   COUNT(*) FILTER (WHERE kind = 'redeem')::int AS redeem_count,
                   COALESCE(SUM(delta) FILTER (WHERE kind = 'refund'), 0)::int AS refunded,

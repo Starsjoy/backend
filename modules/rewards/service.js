@@ -50,11 +50,54 @@ async function notifyCredit({ pool, bot }, userId, kind, points, friendUsername 
   }
 }
 
+/** Xarid bonusi (va referal bonus) shuncha vaqtdan keyin yoziladi — ilovada ham, xabar ham shunda */
+export const REWARD_CREDIT_DELAY_MS = 5 * 60 * 1000;
+
 /**
- * Yetkazilgan buyurtma uchun xaridorga bonus + (birinchi xaridda) taklif qilgan do'stga referal bonus.
- * Idempotent: ref_key tufayli necha marta chaqirilsa ham 1 marta yoziladi.
+ * Yetkazilgan buyurtmani bonus navbatiga qo'yadi (5 daqiqadan keyin runRewardsCreditJob yozadi).
+ * Takroriy chaqiruv — o'zgarishsiz (order_id PRIMARY KEY).
  */
 export async function creditRewardsForOrder(ctx, orderId) {
+  const { pool } = ctx;
+  if (!orderId) return;
+  await pool.query(
+    `INSERT INTO bonus_credit_queue (order_id, due_at) VALUES ($1, $2)
+     ON CONFLICT (order_id) DO NOTHING`,
+    [orderId, new Date(Date.now() + REWARD_CREDIT_DELAY_MS)]
+  );
+}
+
+/** Har daqiqada: vaqti kelgan buyurtmalar uchun bonusni yozib, xabar yuboradi */
+export async function runRewardsCreditJob(ctx) {
+  const { pool } = ctx;
+  const due = await pool.query(
+    `SELECT order_id FROM bonus_credit_queue
+     WHERE processed_at IS NULL AND due_at <= NOW() AND attempts < 5
+     ORDER BY due_at LIMIT 50`
+  );
+  for (const row of due.rows) {
+    // Atomik band qilish — bir nechta jarayon bo'lsa ham 1 marta
+    const claim = await pool.query(
+      `UPDATE bonus_credit_queue SET processed_at = NOW(), attempts = attempts + 1
+       WHERE order_id = $1 AND processed_at IS NULL RETURNING order_id`,
+      [row.order_id]
+    );
+    if (!claim.rowCount) continue;
+    try {
+      await processRewardsForOrder(ctx, row.order_id);
+    } catch (err) {
+      // Keyingi daqiqada qayta urinish (ledger ref_key tufayli ikki marta yozilmaydi)
+      await pool.query(`UPDATE bonus_credit_queue SET processed_at = NULL WHERE order_id = $1`, [row.order_id]);
+      console.error(`❌ Bonus navbati #${row.order_id}:`, err.message);
+    }
+  }
+}
+
+/**
+ * Yetkazilgan buyurtma uchun xaridorga bonus + taklif qilgan do'stga referal bonus.
+ * Idempotent: ref_key tufayli necha marta chaqirilsa ham 1 marta yoziladi.
+ */
+async function processRewardsForOrder(ctx, orderId) {
   const { pool } = ctx;
   if (!orderId) return;
   const r = await pool.query(

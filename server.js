@@ -106,6 +106,7 @@ import {
   isRewardOrder,
   creditRewardsForOrder,
   reconcileRedemptions,
+  runRewardsCreditJob,
   registerRewardsRoutes,
   registerRewardsAdminRoutes,
 } from "./modules/rewards/index.js";
@@ -7768,7 +7769,7 @@ const rewardsCtx = {
   },
 };
 registerRewardsRoutes(app, rewardsCtx);
-registerRewardsAdminRoutes(app, { pool, adminAuth });
+registerRewardsAdminRoutes(app, { pool, adminAuth, bot, notifyErrorChannel: rewardsCtx.notifyErrorChannel });
 
 // 📢 Ixtiyoriy kanal taklifi — /start dan 1 soat keyin (navbat bazada, token.js yozadi)
 setInterval(() => {
@@ -7779,6 +7780,10 @@ setInterval(() => {
 setInterval(() => {
   reconcileRedemptions(rewardsCtx).catch((e) => console.error("❌ Bonus reconcile:", e.message));
 }, 10 * 60 * 1000);
+// Xarid bonusi 5 daqiqadan keyin yoziladi (navbat — bonus_credit_queue)
+setInterval(() => {
+  runRewardsCreditJob(rewardsCtx).catch((e) => console.error("❌ Bonus navbati job:", e.message));
+}, 60 * 1000);
 validateMissionGifts(GIFT_STARS_MAP);
 
 registerAnalyticsRoutes(app, { pool, adminAuth });

@@ -12,7 +12,7 @@ const TEXTS = {
   uz: {
     received: (product, price) => `⏳ ${product} (${price}) uchun to'lovingiz qabul qilindi!`,
     body:
-      "Yetkazishda texnik kechikish yuz berdi. Pulingiz xavfsiz, qayta to'lov qilish shart emas.\n" +
+      "Yetkazishda texnik kechikish yuz berdi. Pulingiz xavfsiz, qayta to'lov qilish shart emas.\n\n" +
       "Admin buyurtmani tez orada yuboradi, yuborilgach sizga xabar keladi.",
     order: "Buyurtma",
     admin: "Admin",
@@ -21,7 +21,7 @@ const TEXTS = {
   ru: {
     received: (product, price) => `⏳ ${product} (${price}): ваша оплата получена!`,
     body:
-      "При отправке произошла техническая задержка. Ваши деньги в безопасности, повторно оплачивать не нужно.\n" +
+      "При отправке произошла техническая задержка. Ваши деньги в безопасности, повторно оплачивать не нужно.\n\n" +
       "Админ скоро отправит заказ, после отправки вы получите уведомление.",
     order: "Заказ",
     admin: "Админ",
@@ -30,7 +30,7 @@ const TEXTS = {
   en: {
     received: (product, price) => `⏳ ${product} (${price}): your payment has been received!`,
     body:
-      "There was a technical delay in delivery. Your money is safe, no need to pay again.\n" +
+      "There was a technical delay in delivery. Your money is safe, no need to pay again.\n\n" +
       "The admin will send your order shortly, and you'll be notified once it's sent.",
     order: "Order",
     admin: "Admin",

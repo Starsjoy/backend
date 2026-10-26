@@ -37,6 +37,19 @@ export async function ensureRewardsTables(pool) {
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_bonus_ledger_user ON bonus_ledger (user_id, id DESC)`
   );
+  // Xarid bonusi darhol emas, 5 daqiqadan keyin yoziladi (va xabar ham shunda) — navbat
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bonus_credit_queue (
+      order_id INTEGER PRIMARY KEY,
+      due_at TIMESTAMPTZ NOT NULL,
+      processed_at TIMESTAMPTZ,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_bonus_credit_queue_due ON bonus_credit_queue (due_at) WHERE processed_at IS NULL`
+  );
 }
 
 /**
