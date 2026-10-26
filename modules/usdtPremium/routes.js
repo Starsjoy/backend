@@ -110,6 +110,8 @@ export function registerUsdtPremiumRoutes(app, ctx) {
         muddat_oy: order.type_amount,
         amount: order.summ,
         status: legacyStatus,
+        // Yetkazish kechikdi (kechikish xabari yuborilgan) — ekran "admin yuboradi" holatiga o'tsin
+        delayed: Boolean(order.delay_notified),
         payment_status: order.payment_status,
         transaction_id: order.transaction_id,
         created_at: order.created_at,

@@ -3101,6 +3101,8 @@ app.get("/api/transactions/:id", telegramAuth, async (req, res) => {
       stars: order.type_amount,
       amount: order.summ,
       status: legacyStatus,
+      // Yetkazish kechikdi (kechikish xabari yuborilgan) — ekran "admin yuboradi" holatiga o'tsin
+      delayed: Boolean(order.delay_notified),
       payment_status: order.payment_status,
       created_at: order.created_at,
       order_type: order.order_type,
@@ -4045,6 +4047,8 @@ app.get("/api/premium/transactions/:id", telegramAuth, async (req, res) => {
       muddat_oy: order.type_amount,
       amount: order.summ,
       status: legacyStatus,
+      // Yetkazish kechikdi (kechikish xabari yuborilgan) — ekran "admin yuboradi" holatiga o'tsin
+      delayed: Boolean(order.delay_notified),
       payment_status: order.payment_status,
       transaction_id: order.transaction_id,
       created_at: order.created_at
@@ -6292,6 +6296,8 @@ app.get("/api/gift/status/:id", telegramAuth, async (req, res) => {
       anonymous: order.gift_anonymous,
       comment: order.gift_comment,
       status: legacyStatus,
+      // Yetkazish kechikdi (kechikish xabari yuborilgan) — ekran "admin yuboradi" holatiga o'tsin
+      delayed: Boolean(order.delay_notified),
       created_at: order.created_at
     });
   } catch (err) {
