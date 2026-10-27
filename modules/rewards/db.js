@@ -3,7 +3,7 @@
  *
  * Har bir o'zgarish ledger'ga NOYOB ref_key bilan yoziladi:
  *   order:<id>        — xarid bonusi (admin qayta yuborsa ham 1 marta)
- *   referral:<userId> — do'stning birinchi xaridi (umrida 1 marta)
+ *   referral:friend:<userId> — do'stning birinchi xaridi (umrida 1 marta; eskilari referral:order:<id>)
  *   redeem:<uuid>     — yechib olish (manfiy)
  *   refund:<orderId>  — yetkazilmagan yechib olishni qaytarish
  *   deduct:<uuid>     — admin ayirgan/nolga tushirgan (manfiy, userga ko'rinmaydi)

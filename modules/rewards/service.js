@@ -12,6 +12,11 @@ import {
 import { applyLedgerEntry } from "./db.js";
 import { MINI_APP_URL, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
 import { escapeTelegramHtml } from "../usdtStars/fragmentNotify.js";
+import {
+  isFragmentCookieError,
+  isFragmentPythonSetupError,
+  isFragmentWalletConfigError,
+} from "../usdtStars/fragmentDelivery.js";
 
 /** Bonus yozilmaydigan to'lov turlari (tekin / ichki buyurtmalar) */
 const NON_PAID_METHODS = ["bonus", "referral", "admin_manual"];
@@ -133,7 +138,17 @@ async function processRewardsForOrder(ctx, orderId) {
     }
   }
 
-  // Referal: taklif qilingan YANGI do'st Stars (har 50⭐ → +3) yoki Premium (har oy → +1) olganda
+  // Referal: taklif qilingan YANGI do'stning FAQAT birinchi xaridi — Stars (har 50⭐ → +3) yoki Premium (har oy → +1)
+  const firstPurchase = await pool.query(
+    `SELECT id FROM orders
+     WHERE owner_user_id = $1 AND status = ANY($2::text[]) AND summ > 0
+       AND COALESCE(LOWER(payment_method), '') <> ALL($3::text[])
+       AND order_id NOT LIKE $4
+     ORDER BY id LIMIT 1`,
+    [buyerId, DELIVERED, NON_PAID_METHODS, `${REWARD_ORDER_PREFIX}%`]
+  );
+  if (firstPurchase.rows[0]?.id !== order.id) return;
+
   const referralPoints = referralRewardForOrder(order);
   if (referralPoints <= 0) return;
 
@@ -151,7 +166,8 @@ async function processRewardsForOrder(ctx, orderId) {
     userId: referrerId,
     delta: referralPoints,
     kind: "referral",
-    refKey: `referral:order:${order.id}`,
+    // Bir do'st uchun umrida 1 marta (eski yozuvlar referral:order:<id> — ular 1-xariddan keyin yana yozilmaydi)
+    refKey: `referral:friend:${buyerId}`,
     orderId: order.id,
     meta: { friend_username: u.rows[0]?.username || null, type_amount: order.type_amount },
   });
@@ -312,6 +328,41 @@ export async function refundRedemption(ctx, orderId, { allowedStatuses = ["faile
   return true;
 }
 
+/**
+ * Yetkazishdan OLDIN pending → processing. reconcile faqat pending'ni qaytaradi, shuning uchun
+ * yuborilayotgan (yoki yuborilib, server o'chib qolgan) buyurtma avtomatik qaytarilmaydi.
+ * reconcile allaqachon bekor qilgan bo'lsa false — yuborilmaydi.
+ */
+export async function claimRedemption(pool, orderId) {
+  const r = await pool.query(
+    `UPDATE orders SET status = 'processing' WHERE id = $1 AND status = 'pending' RETURNING id`,
+    [orderId]
+  );
+  return r.rowCount > 0;
+}
+
+/** Bu xatolar provayderga so'rov yetib bormasdan bo'ladi — hech narsa yuborilmagan, qaytarish xavfsiz */
+function isNotSentError(err) {
+  const msg = String(err?.message || "");
+  return (
+    err?.status === 401 ||
+    err?.status === 503 ||
+    msg.includes("STARS_PAYMEE_API_URL") ||
+    isFragmentCookieError(msg) ||
+    isFragmentWalletConfigError(msg) ||
+    isFragmentPythonSetupError(msg)
+  );
+}
+
+/**
+ * Yetkazish xato bilan tugadi. Aniq yuborilmagan bo'lsa → failed (finalize qaytaradi).
+ * Noaniq bo'lsa (masalan Paymee 500/502) processing'da qoladi — admin hal qiladi.
+ */
+export async function handleRedemptionError(pool, orderId, err) {
+  if (!isNotSentError(err)) return;
+  await pool.query(`UPDATE orders SET status = 'failed' WHERE id = $1 AND status = 'processing'`, [orderId]);
+}
+
 /** Yetkazish urinishidan keyin: natijaga qarab kanal xabari yoki qaytarish */
 export async function finalizeRedemption(ctx, orderId) {
   const { pool, bot, notifyOrdersChannel, sendDeliveredOrderNotify } = ctx;
@@ -369,4 +420,49 @@ export async function reconcileRedemptions(ctx) {
       (e) => console.error(`❌ Bonus reconcile #${row.id}:`, e.message)
     );
   }
+
+  // processing'da qotganlar — yetkazilgan-yetkazilmagani noma'lum, admin'ga ogohlantirish (jarayon davomida 1 marta)
+  const processing = await pool.query(
+    `SELECT o.id, o.recipient_username, o.order_type, o.type_amount FROM orders o
+     WHERE o.order_id LIKE $1 AND o.status = 'processing' AND o.created_at < NOW() - INTERVAL '30 minutes'
+     LIMIT 20`,
+    [`${REWARD_ORDER_PREFIX}%`]
+  );
+  for (const order of processing.rows) {
+    if (alertedStuck.has(order.id)) continue;
+    alertedStuck.add(order.id);
+    ctx.notifyErrorChannel?.(
+      `⏳ <b>Bonus yetkazilishi noaniq (processing)</b>\n\n` +
+        `📦 Order: #${order.id}\n` +
+        `👤 @${escapeTelegramHtml(order.recipient_username)}\n` +
+        `💫 ${escapeTelegramHtml(itemLabel(order))}\n\n` +
+        `Provayderda tekshiring va admin panel → Bonuslar → «Qotgan bonuslar» da hal qiling. ` +
+        `Shu paytgacha user yangi bonus ololmaydi.`
+    );
+  }
+}
+
+const alertedStuck = new Set();
+
+/**
+ * Admin: processing'da qotgan bonus buyurtmasini hal qilish.
+ *   refund    — yetkazilmagan: ⭐ qaytariladi
+ *   delivered — provayderda yetkazilgani tasdiqlandi: completed
+ */
+export async function resolveStuckRedemption(ctx, orderId, action) {
+  const { pool } = ctx;
+  if (action === "refund") {
+    return refundRedemption(ctx, orderId, { allowedStatuses: ["processing", "pending", "failed", "error", "expired"] });
+  }
+  if (action === "delivered") {
+    const r = await pool.query(
+      `UPDATE orders SET status = 'completed' WHERE id = $1 AND order_id LIKE $2 AND status IN ('processing', 'pending')
+       RETURNING id`,
+      [orderId, `${REWARD_ORDER_PREFIX}%`]
+    );
+    if (!r.rowCount) return false;
+    alertedStuck.delete(orderId);
+    return true;
+  }
+  return false;
 }

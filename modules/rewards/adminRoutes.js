@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { REWARD_ORDER_PREFIX } from "./config.js";
 import { applyLedgerEntry, deductBalance } from "./db.js";
+import { resolveStuckRedemption } from "./service.js";
 import { MINI_APP_URL, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
 import { escapeTelegramHtml } from "../usdtStars/fragmentNotify.js";
 
@@ -115,6 +116,40 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth, bot, notifyEr
       res.json({ success: true, deducted: result.deducted, balance: result.balance, ledger_id: result.ledgerId });
     } catch (err) {
       console.error("❌ /api/admin/rewards/deduct:", err.message);
+      res.status(500).json({ error: "Server xatosi" });
+    }
+  });
+
+  /** Qotgan bonus buyurtmalari: processing (yetkazilgani noma'lum) — admin qo'lda hal qiladi */
+  app.get("/api/admin/rewards/stuck", adminAuth, async (_req, res) => {
+    try {
+      const r = await pool.query(
+        `SELECT o.id, o.owner_user_id, u.username AS owner_username, o.recipient_username,
+                o.order_type, o.type_amount, o.status, o.created_at
+         FROM orders o LEFT JOIN users u ON u.user_id = o.owner_user_id
+         WHERE o.order_id LIKE $1 AND o.status = 'processing' AND o.created_at < NOW() - INTERVAL '10 minutes'
+         ORDER BY o.id DESC LIMIT 50`,
+        [`${REWARD_ORDER_PREFIX}%`]
+      );
+      res.json({ success: true, orders: r.rows });
+    } catch (err) {
+      console.error("❌ /api/admin/rewards/stuck:", err.message);
+      res.status(500).json({ error: "Server xatosi" });
+    }
+  });
+
+  app.post("/api/admin/rewards/order/:id/resolve", adminAuth, async (req, res) => {
+    const orderId = Number(req.params.id);
+    const action = String(req.body?.action || "");
+    if (!Number.isInteger(orderId) || orderId <= 0) return res.status(400).json({ error: "Noto'g'ri order" });
+    if (!["refund", "delivered"].includes(action)) return res.status(400).json({ error: "action: refund | delivered" });
+    try {
+      const ok = await resolveStuckRedemption({ pool, bot, notifyErrorChannel }, orderId, action);
+      if (!ok) return res.status(409).json({ error: "Buyurtma topilmadi yoki allaqachon hal qilingan" });
+      console.log(`🛠 Admin bonus #${orderId} → ${action}`);
+      res.json({ success: true });
+    } catch (err) {
+      console.error("❌ /api/admin/rewards/order/resolve:", err.message);
       res.status(500).json({ error: "Server xatosi" });
     }
   });

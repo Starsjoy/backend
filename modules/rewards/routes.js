@@ -8,7 +8,13 @@ import {
 } from "./config.js";
 import { getBalance, getLedger, markSeen } from "./db.js";
 import { buildReferralLink } from "../users/referralLink.js";
-import { RedeemError, createRedemption, finalizeRedemption } from "./service.js";
+import {
+  RedeemError,
+  claimRedemption,
+  createRedemption,
+  finalizeRedemption,
+  handleRedemptionError,
+} from "./service.js";
 
 const RULES = {
   stars_per_50: 2,
@@ -153,9 +159,11 @@ export function registerRewardsRoutes(app, ctx) {
     // Yetkazish fonda — natija /api/rewards/status orqali kuzatiladi
     (async () => {
       try {
+        if (!(await claimRedemption(pool, order.id))) return;
         await ctx.deliverRewardOrder(order);
       } catch (err) {
         console.error(`❌ Bonus yetkazish #${order.id}:`, err?.message || err);
+        await handleRedemptionError(pool, order.id, err).catch(() => {});
       }
       await finalizeRedemption(ctx, order.id).catch((e) =>
         console.error(`❌ Bonus finalize #${order.id}:`, e.message)
