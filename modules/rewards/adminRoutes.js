@@ -254,11 +254,21 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth, bot, notifyEr
     }
   });
 
-  /** Bonusi bor (yoki bo'lgan) userlar — balans bo'yicha, sahifalab */
+  /**
+   * Bonusi bor (yoki bo'lgan) userlar — sahifalab.
+   * sort: balance (eng ko'p bonus) | newest (eng yangi ro'yxatdan o'tgan) | oldest (eng eski)
+   */
+  // [ichki so'rov tartibi, tashqi (LATERAL'dan keyingi) tartib]
+  const USER_SORTS = {
+    balance: ["u.bonus_balance DESC, l.last_at DESC", "p.bonus_balance DESC, p.last_at DESC"],
+    newest: ["u.created_at DESC NULLS LAST, u.user_id DESC", "p.registered_at DESC NULLS LAST, p.user_id DESC"],
+    oldest: ["u.created_at ASC NULLS LAST, u.user_id ASC", "p.registered_at ASC NULLS LAST, p.user_id ASC"],
+  };
   app.get("/api/admin/rewards/users", adminAuth, async (req, res) => {
     try {
       const limit = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 10));
       const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+      const [orderSql, outerOrderSql] = USER_SORTS[req.query.sort] || USER_SORTS.balance;
       const search = String(req.query.search || "").trim().replace(/^@/, "");
       const params = [];
       let searchSql = "";
@@ -279,12 +289,24 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth, bot, notifyEr
           FROM bonus_ledger GROUP BY user_id
         ) l ON l.user_id = u.user_id
         WHERE TRUE ${searchSql}`;
+      // Oxirgi haqiqiy (pulli) xarid — profildagi "Oxirgi xarid" bilan bir xil filtr, faqat sahifadagi userlar uchun
       const [rows, total] = await Promise.all([
         pool.query(
-          `SELECT u.user_id, u.username, u.name, u.bonus_balance, l.*
-           ${base}
-           ORDER BY u.bonus_balance DESC, l.last_at DESC
-           LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+          `SELECT p.*, lo.last_order_at
+           FROM (
+             SELECT u.user_id, u.username, u.name, u.bonus_balance, u.created_at AS registered_at,
+                    l.earned_purchase, l.earned_referral, l.spent, l.unseen_count, l.unseen_stars, l.last_at
+             ${base}
+             ORDER BY ${orderSql}
+             LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+           ) p
+           LEFT JOIN LATERAL (
+             SELECT MAX(o.created_at) AS last_order_at
+             FROM orders o
+             WHERE o.owner_user_id = p.user_id AND o.status IN ('completed', 'delivered') AND o.summ > 0
+               AND COALESCE(o.payment_method, '') NOT IN ('bonus', 'referral', 'admin_manual')
+           ) lo ON TRUE
+           ORDER BY ${outerOrderSql}`,
           [...params, limit, (page - 1) * limit]
         ),
         pool.query(`SELECT COUNT(*)::int AS c ${base}`, params),
