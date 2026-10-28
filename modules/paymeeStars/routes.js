@@ -3,6 +3,7 @@ import { sendStarsViaPaymee } from "./delivery.js";
 import { getPaymeeStarsPrice } from "./price.js";
 import { paymeeStarsSearch } from "./search.js";
 import { logPaymentMatchDebug } from "../payments/matchDebug.js";
+import { claimOrderById } from "../payments/smsLedger.js";
 import {
   sendGuardFailure,
   validatePaymentCardLast4,
@@ -34,7 +35,9 @@ export async function matchPaymeeStarsPayment(req, res, ctx) {
       return sendGuardFailure(res, cardCheck);
     }
 
-    const updated = await pool.query(
+    const updated = req.body.order_id
+      ? await claimOrderById(pool, { orderId: req.body.order_id, amount: matchAmount, orderTypes: [ORDER_TYPE] })
+      : await pool.query(
       `UPDATE orders
        SET payment_status = 'paid',
            status = CASE WHEN status = 'pending' THEN 'processing' ELSE status END

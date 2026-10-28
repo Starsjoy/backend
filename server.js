@@ -116,6 +116,7 @@ import {
   scheduleReviewRequestAfterFirstPurchase,
   runReviewRequestJob,
 } from "./modules/notifications/reviewRequest.js";
+import { claimOrderById } from "./modules/payments/smsLedger.js";
 dotenv.config();
 const { Pool } = pkg;
 const app = express();
@@ -771,7 +772,7 @@ setInterval(async () => {
 // └─────────────────────────────────────────────────────────────────┘
 const PRICE_SLOT_CONFIG = {
   MAX_SLOTS: 20,           // Maksimum parallel orderlar (0-19)
-  SLOT_TIMEOUT: 5 * 60 * 1000, // 5 daqiqa (ms)
+  SLOT_TIMEOUT: 8 * 60 * 1000, // 8 daqiqa (ms) — mijoz taymeri bilan bir xil
 };
 
 // ======================
@@ -1221,7 +1222,7 @@ function getPremiumPriceSlotsInfo(months) {
 const GIFT_SLOT_CONFIG = {
   MAX_SLOTS: 10,           // Maksimum parallel gift orderlar (0-9)
   PRICE_STEP: 100,         // Har bir slot uchun 100 so'm farq
-  SLOT_TIMEOUT: 5 * 60 * 1000, // 5 daqiqa (ms)
+  SLOT_TIMEOUT: 8 * 60 * 1000, // 8 daqiqa (ms) — mijoz taymeri bilan bir xil
 };
 
 // In-memory gift price slot tracker: { giftStars: { slotIndex: { orderId, createdAt } } }
@@ -3144,18 +3145,20 @@ app.post("/api/payments/match", internalAuth, async (req, res) => {
       ].includes(String(t))
     );
 
-    const updated = await pool.query(
+    const updated = req.body.order_id
+      ? await claimOrderById(pool, { orderId: req.body.order_id, amount: matchAmount, orderTypes: typeFilter })
+      : await pool.query(
       `UPDATE orders
        SET payment_status = 'paid',
            status = CASE WHEN status = 'pending' THEN 'processing' ELSE status END
        WHERE id = (
-         SELECT id FROM orders 
-         WHERE summ = $1 
+         SELECT id FROM orders
+         WHERE summ = $1
            AND payment_status = 'pending'
            AND status = 'pending'
            AND order_type = ANY($2::text[])
            AND created_at >= (NOW() AT TIME ZONE 'Asia/Tashkent') - INTERVAL '15 minutes'
-         ORDER BY id DESC 
+         ORDER BY id DESC
          LIMIT 1
          FOR UPDATE SKIP LOCKED
        )
@@ -3851,7 +3854,7 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
       } catch (e) {
         console.error("❌ Premium Expiry tekshirishda xato:", e);
       }
-    }, 5 * 60 * 1000);
+    }, 8 * 60 * 1000); // mijoz taymeri bilan bir xil (8 daqiqa)
     // Backward compatible response
     return res.json({ 
       success: true, 
@@ -3887,7 +3890,9 @@ app.post("/api/premium/match", internalAuth, async (req, res) => {
       return res.status(400).json({ error: "amount noto'g'ri" });
     }
     console.log("🔎 Pending premium order qidirilmoqda:", matchAmount);
-    const updated = await pool.query(
+    const updated = req.body.order_id
+      ? await claimOrderById(pool, { orderId: req.body.order_id, amount: matchAmount, orderTypes: ["premium"] })
+      : await pool.query(
       `UPDATE orders 
        SET payment_status='paid', status='processing'
        WHERE id=(
@@ -6249,7 +6254,7 @@ const uniqueSum = await generateUniqueOrderSum(finalAmount, client);
       } catch (e) {
         console.error("❌ Gift expiry xatosi:", e);
       }
-    }, 5 * 60 * 1000);
+    }, 8 * 60 * 1000); // mijoz taymeri bilan bir xil (8 daqiqa)
 
     // username / recipient_username — oluvchi (stars/premium bilan bir xil ma'noda)
     res.json({
@@ -6317,7 +6322,9 @@ app.post("/api/gift/match", internalAuth, async (req, res) => {
     if (!card_last4 || !amount) {
       return res.status(400).json({ error: "card_last4 va amount kerak" });
     }
-    const updated = await pool.query(
+    const updated = req.body.order_id
+      ? await claimOrderById(pool, { orderId: req.body.order_id, amount: parseInt(amount, 10), orderTypes: ["gift"] })
+      : await pool.query(
       `UPDATE orders
        SET payment_status = 'paid',
            status = 'processing'

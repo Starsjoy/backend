@@ -288,7 +288,7 @@ export async function createPaymeePremiumOrder(req, res, ctx) {
       } catch {
         /* ignore */
       }
-    }, 5 * 60 * 1000);
+    }, 8 * 60 * 1000); // mijoz taymeri bilan bir xil (8 daqiqa)
 
     res.json({
       id: order.id,

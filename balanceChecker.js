@@ -5,6 +5,14 @@ import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage } from 'telegram/events/index.js';
 import fetch from 'node-fetch';
 import express from 'express';
+import pg from 'pg';
+import {
+    ensureSmsLedger,
+    parseSmsTime,
+    recordSms,
+    finishSms,
+    resolveSmsOrder,
+} from './modules/payments/smsLedger.js';
 import {
     cardsForChat,
     findCardForSms,
@@ -55,9 +63,65 @@ if (!MATCH_API_STARS || !MATCH_API_PREMIUM) {
     console.error('❌ MATCH_API_STARS yoki MATCH_API_PREMIUM .env da yo\'q!');
 }
 
+// Order turi → shu turni yopadigan match endpoint. Tartib = eski zanjir tartibi
+// (bir xil summa bir nechta turda bo'lsa, eski zanjir qaysini olsa — shu).
+const MATCH_URL_BY_TYPE = {
+    stars: MATCH_API_STARS,
+    premium_paymee: MATCH_API_PREMIUM_PAYMEE,
+    stars_paymee: MATCH_API_STARS_PAYMEE,
+    stars_usdt: MATCH_API_STARS_USDT,
+    premium_usdt: MATCH_API_PREMIUM_USDT,
+    premium: MATCH_API_PREMIUM,
+    gift: MATCH_API_GIFT,
+};
+const CHAIN_TYPES = Object.keys(MATCH_URL_BY_TYPE).filter((t) => MATCH_URL_BY_TYPE[t]);
+
+// ================== SMS DAFTARI (sms_payments) ==================
+// Daftar ishlamasa (DB xato) — eski zanjir o'zgarishsiz ishlayveradi.
+let ledgerPool = null;
+let ledgerSince = null;
+
+async function initSmsLedger() {
+    if (!process.env.DATABASE_URL) {
+        console.error('⚠️ SMS daftari: DATABASE_URL yo\'q — eski usulda ishlaymiz');
+        return;
+    }
+    try {
+        const pool = new pg.Pool({
+            connectionString: process.env.DATABASE_URL,
+            max: 3,
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 10000,
+        });
+        pool.on('error', (err) => console.error('❌ SMS daftari pool xatosi:', err.message));
+        ledgerSince = await ensureSmsLedger(pool);
+        ledgerPool = pool;
+        console.log(`📒 SMS daftari tayyor (${ledgerSince.toISOString()} dan beri)`);
+    } catch (err) {
+        console.error('❌ SMS daftari ishga tushmadi — eski usulda ishlaymiz:', err.message);
+        ledgerPool = null;
+    }
+}
+
+function notifyAdmin(html) {
+    const token = process.env.BOT_TOKEN;
+    const chatId = String(process.env.ERROR_LOG_CHANNEL_ID || "-1003836618718");
+    if (!token) return;
+    fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: html, parse_mode: 'HTML' }),
+    }).catch((e) => console.error('Admin xabari yuborilmadi:', e.message));
+}
+
+function escapeHtml(s) {
+    return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // Telegram client (global)
 let client = null;
 let isClientReady = false;
+let lastCardSmsAt = Date.now();
 
 // SMS parserlar modulda (UZCARD va HUMO formatlari alohida) —
 // parsePaymentForBrand(brand, text) to'g'ri parserni tanlaydi.
@@ -84,6 +148,286 @@ async function autoReconnect(clientInstance) {
     }
 }
 
+// Eski zanjir: summa bo'yicha "hozir pending" orderni qidiradi (SMS vaqtini bilmaydi).
+// SMS vaqti o'qilmasa yoki daftar ishlamasa ishlatiladi. Topilgan order javobi yoki null.
+async function runLegacyMatchChain(parsed) {
+    const matchHeaders = {
+        "Content-Type": "application/json",
+        "X-Internal-Key": INTERNAL_SECRET,
+    };
+
+    // 1) RobynHood Stars (faqat order_type=stars — gift/premium bilan aralashmasin)
+    let res = await fetch(MATCH_API_STARS, {
+        method: "POST",
+        headers: matchHeaders,
+        body: JSON.stringify({
+            ...parsed,
+            allowed_order_types: ["stars"],
+        }),
+    });
+
+    // 2) Paymee Premium — stars dan oldin (bir xil summ collision)
+    if (!res.ok && MATCH_API_PREMIUM_PAYMEE) {
+        const errBody = await res.text().catch(() => "");
+        console.log(
+            "💎 Paymee premium urinyapti...",
+            errBody ? errBody.slice(0, 200) : ""
+        );
+        res = await fetch(MATCH_API_PREMIUM_PAYMEE, {
+            method: "POST",
+            headers: matchHeaders,
+            body: JSON.stringify({
+                amount: parsed.amount,
+                card_last4: parsed.card_last4,
+            }),
+        });
+    }
+
+    // 3) Paymee Stars (/paymeestars)
+    if (!res.ok && MATCH_API_STARS_PAYMEE) {
+        const errBody = await res.text().catch(() => "");
+        console.log(
+            "⭐ Paymee premium topilmadi → Paymee stars...",
+            errBody ? errBody.slice(0, 200) : ""
+        );
+        res = await fetch(MATCH_API_STARS_PAYMEE, {
+            method: "POST",
+            headers: matchHeaders,
+            body: JSON.stringify(parsed),
+        });
+    }
+
+    // 4) Fragment Stars (/usdtstars)
+    if (!res.ok && MATCH_API_STARS_USDT) {
+        const errBody = await res.text().catch(() => "");
+        console.log(
+            "⭐ Paymee stars topilmadi → Fragment stars urinyapti...",
+            errBody ? errBody.slice(0, 200) : ""
+        );
+        res = await fetch(MATCH_API_STARS_USDT, {
+            method: "POST",
+            headers: matchHeaders,
+            body: JSON.stringify(parsed),
+        });
+    }
+
+    // 5) Fragment Premium — Robyn premium dan OLDIN
+    if (!res.ok && MATCH_API_PREMIUM_USDT) {
+        const errBody = await res.text().catch(() => "");
+        console.log(
+            "💎 Fragment premium urinyapti...",
+            errBody ? errBody.slice(0, 200) : ""
+        );
+        res = await fetch(MATCH_API_PREMIUM_USDT, {
+            method: "POST",
+            headers: matchHeaders,
+            body: JSON.stringify({ amount: parsed.amount }),
+        });
+    }
+
+    // 6) RobynHood Premium
+    if (!res.ok && MATCH_API_PREMIUM) {
+        console.log("💎 Fragment premium topilmadi → Robyn premium...");
+        res = await fetch(MATCH_API_PREMIUM, {
+            method: "POST",
+            headers: matchHeaders,
+            body: JSON.stringify(parsed),
+        });
+    }
+
+    if (res.ok) {
+        const result = await res.json();
+        console.log("🎉 Muvaffaqiyatli topildi:", result);
+        return result;
+    } else {
+        const failBody = await res.text().catch(() => "");
+        console.log(
+            `⚠️ Match ${res.status} (${parsed.amount} so'm): ${failBody.slice(0, 300)}`
+        );
+        console.log("⭐💎 Stars/Premium da topilmadi → GIFT urinyapti...");
+        res = await fetch(MATCH_API_GIFT, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-Internal-Key": INTERNAL_SECRET
+            },
+            body: JSON.stringify(parsed),
+        });
+
+        if (res.ok) {
+            const result = await res.json();
+            console.log("🎁 Gift to'lov topildi:", result);
+            return result;
+        } else {
+            console.log("⚠️ Hech qaysi bazada topilmadi");
+        }
+    }
+    return null;
+}
+
+// Kiruvchi to'lov SMS'i: daftarga yozish → SMS vaqti bo'yicha order → yopish.
+// Qoidalar (smsLedger.js): faqat TO'LANMAGAN order yopiladi — to'langan, lekin
+// yetkazilmagan orderni tizim hech qachon qayta yetkazmaydi (bu admin ishi).
+async function processCardPayment(peerId, msg, parsed, onFresh) {
+    const smsTime = parseSmsTime(msg.message);
+
+    let smsId = null;
+    if (ledgerPool) {
+        try {
+            smsId = await recordSms(ledgerPool, {
+                chatId: peerId,
+                msgId: msg.id,
+                cardLast4: parsed.card_last4,
+                amount: parsed.amount,
+                smsTime,
+                rawText: msg.message,
+            });
+            if (smsId === null) {
+                console.log(`⏭️ Bu SMS avval ishlangan (chat=${peerId}, msg=${msg.id}) — o'tkazildi`);
+                return;
+            }
+        } catch (err) {
+            console.error('❌ SMS daftariga yozishda xato — eski usul:', err.message);
+        }
+    }
+    onFresh?.();
+
+    if (smsId && smsTime) {
+        let resolved = null;
+        try {
+            resolved = await resolveSmsOrder(ledgerPool, {
+                amount: parsed.amount,
+                smsTime,
+                receivedAt: msg.date ? new Date(msg.date * 1000) : new Date(),
+                ledgerSince,
+                chainTypes: CHAIN_TYPES,
+            });
+        } catch (err) {
+            console.error('❌ SMS vaqti bo\'yicha qidirishda xato — eski usul:', err.message);
+        }
+
+        if (resolved) {
+            await applySmsDecision(smsId, parsed, smsTime, resolved);
+            return;
+        }
+    }
+
+    const result = await runLegacyMatchChain(parsed);
+    if (smsId) {
+        await finishSms(
+            ledgerPool,
+            smsId,
+            result ? 'legacy_matched' : 'legacy_unmatched',
+            result?.id ?? null,
+            smsTime ? null : 'SMS vaqti o\'qilmadi'
+        ).catch((e) => console.error('⚠️ SMS daftari yangilanmadi:', e.message));
+    }
+}
+
+async function applySmsDecision(smsId, parsed, smsTime, resolved) {
+    const { decision, order, candidates } = resolved;
+    const timeStr = smsTime.toLocaleString('uz-UZ', { timeZone: 'Asia/Tashkent' });
+    const amountStr = `${Number(parsed.amount).toLocaleString()} so'm`;
+    console.log(`🕓 SMS vaqti ${timeStr} | ${amountStr} → ${decision}`, JSON.stringify(candidates));
+
+    if (decision === 'match') {
+        const url = MATCH_URL_BY_TYPE[order.order_type];
+        if (!url) {
+            await finishSms(ledgerPool, smsId, 'error', order.id, `match URL yo'q: ${order.order_type}`);
+            notifyAdmin(
+                `⚠️ <b>To'lov keldi, lekin avtomatik yopib bo'lmadi</b>\n\n` +
+                `#${order.id} (${escapeHtml(order.order_type)}) — ${amountStr}, ${escapeHtml(timeStr)}\n` +
+                `Sabab: bu turdagi order uchun match manzili sozlanmagan. Qo'lda tekshiring.`
+            );
+            return;
+        }
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Internal-Key': INTERNAL_SECRET },
+            body: JSON.stringify({
+                ...parsed,
+                order_id: order.id,
+                allowed_order_types: [order.order_type],
+            }),
+        });
+        if (res.ok) {
+            const result = await res.json().catch(() => ({}));
+            console.log('🎉 SMS vaqti bo\'yicha topildi:', result);
+            await finishSms(ledgerPool, smsId, 'matched', order.id, resolved.note);
+            if (order.status === 'expired') {
+                notifyAdmin(
+                    `♻️ <b>Kechikkan to'lov avtomatik yopildi</b>\n\n` +
+                    `#${order.id} (${escapeHtml(order.order_type)}) — ${amountStr}\n` +
+                    `SMS dagi vaqt: ${escapeHtml(timeStr)} (taymer ichida)\n` +
+                    `Order muddati o'tgan deb belgilangan edi — endi yetkazilmoqda.`
+                );
+            }
+        } else {
+            // Poyga: shu orada admin qo'lda olgan bo'lishi mumkin — hech narsa qilmaymiz
+            const body = await res.text().catch(() => '');
+            console.log(`⚠️ Order #${order.id} yopilmadi (${res.status}): ${body.slice(0, 200)}`);
+            await finishSms(ledgerPool, smsId, 'match_failed', order.id, `${res.status} ${body.slice(0, 300)}`);
+            notifyAdmin(
+                `⚠️ <b>To'lov keldi, lekin order yopilmadi</b>\n\n` +
+                `#${order.id} (${escapeHtml(order.order_type)}) — ${amountStr}, ${escapeHtml(timeStr)}\n` +
+                `Javob: ${res.status}. Order holatini qo'lda tekshiring.`
+            );
+        }
+        return;
+    }
+
+    if (decision === 'manual_paid') {
+        await finishSms(ledgerPool, smsId, 'manual_paid', order.id);
+        console.log(`🔗 SMS qo'lda tasdiqlangan #${order.id} ga bog'landi — hech narsa yuborilmadi`);
+        notifyAdmin(
+            `🔗 <b>Kechikkan SMS keldi</b>\n\n` +
+            `${amountStr}, ${escapeHtml(timeStr)} → #${order.id} (allaqachon to'langan).\n` +
+            `Hech narsa qayta yuborilmadi.`
+        );
+        return;
+    }
+
+    if (decision === 'ambiguous') {
+        await finishSms(ledgerPool, smsId, 'ambiguous', null, JSON.stringify(candidates));
+        const list = candidates
+            .map((c) => `• #${c.id} ${escapeHtml(c.type)} — ${escapeHtml(c.status)}/${escapeHtml(c.payment_status)}`)
+            .join('\n');
+        notifyAdmin(
+            `❓ <b>To'lov qaysi orderga tegishli — aniq emas</b>\n\n` +
+            `${amountStr}, SMS vaqti ${escapeHtml(timeStr)}\n\n${list}\n\n` +
+            `Avtomatik hech narsa qilinmadi. Qo'lda hal qiling.`
+        );
+        return;
+    }
+
+    // unmatched — boshqa loyiha to'lovi yoki taymerdan keyin to'langan.
+    // Mavjud monitoring (ORDERS kanal) bu holatda o'zi ogohlantiradi.
+    await finishSms(ledgerPool, smsId, 'unmatched');
+    console.log(`⚠️ SMS vaqti bo'yicha mos order yo'q (${amountStr}, ${timeStr})`);
+}
+
+// Restart paytida kelgan SMS'lar yo'qolmasin: oxirgi xabarlarni qayta ko'rib chiqamiz.
+// Daftar takrorni o'tkazib yuboradi, daftardan oldingi xabarlarga tegilmaydi.
+async function catchUpRecentSms(handler) {
+    if (!ledgerPool || !ledgerSince) return;
+    const since = Math.max(ledgerSince.getTime(), Date.now() - 60 * 60 * 1000);
+    for (const chatId of MONITORED_CARD_CHATS) {
+        try {
+            const messages = await client.getMessages(parseInt(chatId), { limit: 50 });
+            const fresh = messages
+                .filter((m) => m?.date && m.date * 1000 >= since)
+                .sort((a, b) => a.id - b.id);
+            if (fresh.length) {
+                console.log(`🔁 Catch-up: ${chatId} chatida ${fresh.length} ta so'nggi xabar tekshirilmoqda`);
+            }
+            for (const m of fresh) {
+                await handler({ message: m });
+            }
+        } catch (err) {
+            console.error(`⚠️ Catch-up xatosi (${chatId}):`, err.message);
+        }
+    }
+}
 // ================== TELEGRAM CLIENT INIT (FAQAT SMS LISTENER) ==================
 export async function initBalanceClient() {
     if (isClientReady && client?.connected) {
@@ -158,8 +502,9 @@ export async function initBalanceClient() {
     const MONITORED_CHANNELS = [ORDERS_CHANNEL, PREMIUMSEND_CHANNEL];
     console.log(`📡 Monitoring kanallar: ORDERS=${ORDERS_CHANNEL}, PREMIUM=${PREMIUMSEND_CHANNEL}`);
 
-    client.addEventHandler(
-        async (event) => {
+    await initSmsLedger();
+
+    const handleCardMessage = async (event) => {
             try {
                 const msg = event.message;
                 if (!msg) return;
@@ -209,6 +554,7 @@ export async function initBalanceClient() {
                 // bo'lishi mumkin — masalan ikkala karta bitta bank botida)
                 const chatCards = cardsForChat(peerId);
                 if (chatCards.length === 0) return;
+                lastCardSmsAt = Date.now();
 
                 const brands = [...new Set(chatCards.map((c) => c.brand))];
                 console.log(`📩 [${brands.join("/").toUpperCase()} SMS] Xabar keldi:`, {
@@ -248,128 +594,41 @@ export async function initBalanceClient() {
 
                 console.log("💳 To'lov aniqlandi:", parsed);
 
-                // Monitoring uchun qo'shish
-                pendingUzcardPayments.push({
-                    amount: parsed.amount,
-                    text: parsed.raw_text,
-                    timestamp: Date.now()
+                // Monitoring uchun qo'shish — faqat yangi (takror bo'lmagan) SMS
+                await processCardPayment(peerId, msg, parsed, () => {
+                    pendingUzcardPayments.push({
+                        amount: parsed.amount,
+                        text: parsed.raw_text,
+                        timestamp: Date.now()
+                    });
                 });
-
-                const matchHeaders = {
-                    "Content-Type": "application/json",
-                    "X-Internal-Key": INTERNAL_SECRET,
-                };
-
-                // 1) RobynHood Stars (faqat order_type=stars — gift/premium bilan aralashmasin)
-                let res = await fetch(MATCH_API_STARS, {
-                    method: "POST",
-                    headers: matchHeaders,
-                    body: JSON.stringify({
-                        ...parsed,
-                        allowed_order_types: ["stars"],
-                    }),
-                });
-
-                // 2) Paymee Premium — stars dan oldin (bir xil summ collision)
-                if (!res.ok && MATCH_API_PREMIUM_PAYMEE) {
-                    const errBody = await res.text().catch(() => "");
-                    console.log(
-                        "💎 Paymee premium urinyapti...",
-                        errBody ? errBody.slice(0, 200) : ""
-                    );
-                    res = await fetch(MATCH_API_PREMIUM_PAYMEE, {
-                        method: "POST",
-                        headers: matchHeaders,
-                        body: JSON.stringify({
-                            amount: parsed.amount,
-                            card_last4: parsed.card_last4,
-                        }),
-                    });
-                }
-
-                // 3) Paymee Stars (/paymeestars)
-                if (!res.ok && MATCH_API_STARS_PAYMEE) {
-                    const errBody = await res.text().catch(() => "");
-                    console.log(
-                        "⭐ Paymee premium topilmadi → Paymee stars...",
-                        errBody ? errBody.slice(0, 200) : ""
-                    );
-                    res = await fetch(MATCH_API_STARS_PAYMEE, {
-                        method: "POST",
-                        headers: matchHeaders,
-                        body: JSON.stringify(parsed),
-                    });
-                }
-
-                // 4) Fragment Stars (/usdtstars)
-                if (!res.ok && MATCH_API_STARS_USDT) {
-                    const errBody = await res.text().catch(() => "");
-                    console.log(
-                        "⭐ Paymee stars topilmadi → Fragment stars urinyapti...",
-                        errBody ? errBody.slice(0, 200) : ""
-                    );
-                    res = await fetch(MATCH_API_STARS_USDT, {
-                        method: "POST",
-                        headers: matchHeaders,
-                        body: JSON.stringify(parsed),
-                    });
-                }
-
-                // 5) Fragment Premium — Robyn premium dan OLDIN
-                if (!res.ok && MATCH_API_PREMIUM_USDT) {
-                    const errBody = await res.text().catch(() => "");
-                    console.log(
-                        "💎 Fragment premium urinyapti...",
-                        errBody ? errBody.slice(0, 200) : ""
-                    );
-                    res = await fetch(MATCH_API_PREMIUM_USDT, {
-                        method: "POST",
-                        headers: matchHeaders,
-                        body: JSON.stringify({ amount: parsed.amount }),
-                    });
-                }
-
-                // 6) RobynHood Premium
-                if (!res.ok && MATCH_API_PREMIUM) {
-                    console.log("💎 Fragment premium topilmadi → Robyn premium...");
-                    res = await fetch(MATCH_API_PREMIUM, {
-                        method: "POST",
-                        headers: matchHeaders,
-                        body: JSON.stringify(parsed),
-                    });
-                }
-
-                if (res.ok) {
-                    const result = await res.json();
-                    console.log("🎉 Muvaffaqiyatli topildi:", result);
-                } else {
-                    const failBody = await res.text().catch(() => "");
-                    console.log(
-                        `⚠️ Match ${res.status} (${parsed.amount} so'm): ${failBody.slice(0, 300)}`
-                    );
-                    console.log("⭐💎 Stars/Premium da topilmadi → GIFT urinyapti...");
-                    res = await fetch(MATCH_API_GIFT, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "X-Internal-Key": INTERNAL_SECRET
-                        },
-                        body: JSON.stringify(parsed),
-                    });
-
-                    if (res.ok) {
-                        const result = await res.json();
-                        console.log("🎁 Gift to'lov topildi:", result);
-                    } else {
-                        console.log("⚠️ Hech qaysi bazada topilmadi");
-                    }
-                }
             } catch (err) {
                 console.error("❌ SMS Handler xatosi:", err);
             }
-        },
-        new NewMessage({})
-    );
+    };
+    client.addEventHandler(handleCardMessage, new NewMessage({}));
+
+    // Restart paytida kelgan SMS'lar
+    catchUpRecentSms(handleCardMessage).catch((e) => console.error("Catch-up xatosi:", e.message));
+
+    // CardXabar jim qolsa (sessiya uzilgan / format o'zgargan) — adminga xabar
+    let silenceAlerted = false;
+    setInterval(() => {
+        const hour = Number(
+            new Date().toLocaleString('en-US', { timeZone: 'Asia/Tashkent', hour: 'numeric', hour12: false })
+        );
+        const silentMin = Math.round((Date.now() - lastCardSmsAt) / 60000);
+        const daytime = hour >= 9 && hour < 23;
+        if (daytime && silentMin >= 60 && !silenceAlerted) {
+            silenceAlerted = true;
+            notifyAdmin(
+                `🔕 <b>Karta SMS'lari ${silentMin} daqiqadan beri kelmayapti</b>\n\n` +
+                `Userbot ulanishi: ${client?.connected ? 'bor' : "YO'Q"}\n` +
+                `CardXabar/HUMO chatini va userbot sessiyasini tekshiring.`
+            );
+        }
+        if (silentMin < 60) silenceAlerted = false;
+    }, 5 * 60 * 1000);
 
     // Timer (Har 1 daqiqada tekshiradi)
     setInterval(() => {

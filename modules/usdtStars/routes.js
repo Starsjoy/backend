@@ -13,6 +13,7 @@ import {
   FRAGMENT_TOKEN_KEYS,
 } from "../tokens/tokensDb.js";
 import { logPaymentMatchDebug } from "../payments/matchDebug.js";
+import { claimOrderById } from "../payments/smsLedger.js";
 
 const ORDER_TYPE = "stars_usdt";
 
@@ -32,7 +33,9 @@ export async function matchUsdtStarsPayment(req, res, ctx) {
       return res.status(400).json({ error: "amount noto'g'ri" });
     }
 
-    const updated = await pool.query(
+    const updated = req.body.order_id
+      ? await claimOrderById(pool, { orderId: req.body.order_id, amount: matchAmount, orderTypes: [ORDER_TYPE] })
+      : await pool.query(
       `UPDATE orders
        SET payment_status = 'paid',
            status = CASE WHEN status = 'pending' THEN 'processing' ELSE status END
