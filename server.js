@@ -100,6 +100,7 @@ import {
   sendExpiredOrderNotify,
 } from "./modules/notifications/orderExpiredMessages.js";
 import { sendDeliveredOrderNotify } from "./modules/notifications/orderDeliveredMessages.js";
+import { notifySourceOrder } from "./modules/sources/index.js";
 import { sendDelayedOrderNotify } from "./modules/notifications/orderDelayedMessages.js";
 import {
   ensureRewardsTables,
@@ -3995,6 +3996,7 @@ async function sendPremiumToUser(orderId, recipientId, months) {
       creditRewardsForOrder({ pool, bot }, orderId).catch((err) =>
         console.error("❌ Bonus yozishda xato:", err.message)
       );
+      notifySourceOrder(pool, bot, orderId);
       return { status: "completed", transaction_id: data.transaction_id };
     }
     console.log("❌ Provider error:", data.error);
@@ -7318,6 +7320,9 @@ async function sendUnifiedChannelNotification(order, type, isFailed = false) {
     scheduleReviewRequestAfterFirstPurchase(pool, order).catch((err) =>
       console.error("❌ Sharh so'rovi rejalashtirish:", err.message)
     );
+
+    // 📣 Reklama manbasidan (masalan Uzbektype) kelgan user — manba kanaliga ham
+    notifySourceOrder(pool, bot, order.id);
   }
 }
 // 🎁 Referral bonus user_id orqali

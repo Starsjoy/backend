@@ -5,6 +5,7 @@ import { upsertUserFromTelegram } from './modules/users/upsertUser.js';
 import { linkReferrerOnSignup, parseReferralPayload } from './modules/users/referralLink.js';
 import { markUserSubscribed } from './modules/users/subscription.js';
 import { scheduleChannelInvite } from './modules/notifications/channelInvite.js';
+import { handleSourceStart } from './modules/sources/index.js';
 const { Pool } = pg;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -132,6 +133,7 @@ bot.start(async (ctx) => {
   const fullName = ctx.from.first_name;
   const username = ctx.from.username || `user_${userId}`; // Username bo'lmasa user_id ishlatiladi
   const language = ctx.from.language_code || 'uz';
+  const startPayload = ctx.payload ?? ctx.startPayload;
 
   try {
     const { created, username: savedUsername } = await upsertUserFromTelegram(pool, {
@@ -140,12 +142,20 @@ bot.start(async (ctx) => {
       username,
       language,
     });
+    // Reklama manbasi (t.me/StarsjoyBot?start=uzbektype) — fonda, start javobini kutdirmaydi
+    handleSourceStart(pool, bot, {
+      payload: startPayload,
+      userId,
+      username: savedUsername || username,
+      name: fullName,
+      created,
+    });
     if (created) {
       console.log(
         `👤 Bot orqali yangi user ro'yxatdan o'tdi: ${userId} (${savedUsername || fullName})`
       );
       // Referal havolasi (t.me/StarsjoyBot?start=ref_<kod>) — faqat YANGI userni bog'laymiz
-      const referralCode = parseReferralPayload(ctx.payload ?? ctx.startPayload);
+      const referralCode = parseReferralPayload(startPayload);
       if (referralCode) {
         const referrer = await linkReferrerOnSignup(pool, {
           userId,
@@ -549,6 +559,15 @@ Barcha foydalanuvchilarga yuborilsinmi?`,
   } catch (err) {
     console.error('❌ Broadcast photo handler error:', err);
   }
+});
+
+
+// Bot kanal/guruhga qo'shilganda chat ID'ni logga yozadi (manba kanallari ID'sini topish uchun)
+bot.on('my_chat_member', (ctx, next) => {
+  const chat = ctx.myChatMember?.chat;
+  const status = ctx.myChatMember?.new_chat_member?.status;
+  if (chat) console.log(`📌 Bot holati o'zgardi: "${chat.title || chat.username || ''}" id=${chat.id} type=${chat.type} status=${status}`);
+  return next();
 });
 
 
