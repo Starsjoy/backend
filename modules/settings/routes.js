@@ -113,7 +113,7 @@ export function registerSettingsRoutes(app, ctx) {
   app.post("/api/admin/payment-system", adminAuth, async (req, res) => {
     try {
       const slot = req.body?.slot ?? req.body?.system;
-      if (!slot) return res.status(400).json({ error: "slot kerak (uzcard1 | humo1)" });
+      if (!slot) return res.status(400).json({ error: "slot kerak (uzcard1 | uzcard2 | humo1)" });
 
       const settings = await setPaymentSystem(pool, slot);
       res.json({

@@ -15,7 +15,7 @@ export const SETTING_KEYS = {
   STARS_PURCHASE_MODE: "stars_purchase_mode",
   FRAGMENT_PAYMENT_METHOD: "fragment_payment_method",
   USERBOT_AUTO_REFILL: "userbot_auto_refill_enabled",
-  /** Mijozga qaysi karta ko'rsatiladi: uzcard1 | humo1 */
+  /** Mijozga qaysi karta ko'rsatiladi: uzcard1 | uzcard2 | humo1 */
   PAYMENT_SYSTEM: "payment_system",
 };
 
