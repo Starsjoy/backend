@@ -65,13 +65,14 @@ export function registerRewardsRoutes(app, ctx) {
         enabled,
         balance,
         rules: RULES,
-        catalog: REWARD_CATALOG.map(({ id, kind, cost, stars, gift_id }) => ({
+        catalog: REWARD_CATALOG.map(({ id, kind, cost, stars, gift_id, available = true }) => ({
           id,
           kind,
           cost,
           stars,
           gift_id: gift_id || null,
-          can_redeem: enabled && balance >= cost,
+          available,
+          can_redeem: enabled && available && balance >= cost,
         })),
         ledger,
         active_redemption: active.rows[0] || null,
@@ -121,6 +122,9 @@ export function registerRewardsRoutes(app, ctx) {
 
     const item = getCatalogItem(String(req.body?.item_id || ""));
     if (!item) return res.status(400).json({ code: "bad_item", error: "Noto'g'ri tanlov" });
+    if (item.available === false) {
+      return res.status(409).json({ code: "unavailable", error: "Bu sovg'a vaqtincha mavjud emas" });
+    }
 
     // Qabul qiluvchi: user tanlagan username, ko'rsatilmasa — o'zi (initData'dagi haqiqiy username)
     const rawRecipient = String(req.body?.recipient_username || "").trim();

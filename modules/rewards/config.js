@@ -57,7 +57,9 @@ export function normalizeRecipientUsername(raw) {
 
 /** Bonus balansdan olish mumkin bo'lgan narsalar. gift_id lar GIFT_STARS_MAP da bo'lishi shart. */
 export const REWARD_CATALOG = [
-  { id: "gift15", kind: "gift", cost: 15, stars: 15, gift_id: "5170233102089322756" },
+  // available: false — katalogda ko'rinadi, lekin olib bo'lmaydi (Telegram bu giftni vaqtincha bermayapti)
+  { id: "gift15", kind: "gift", cost: 15, stars: 15, gift_id: "5170233102089322756", available: false },
+  { id: "gift15heart", kind: "gift", cost: 15, stars: 15, gift_id: "5170145012310081615" },
   { id: "gift25", kind: "gift", cost: 25, stars: 25, gift_id: "5168103777563050263" },
   { id: "stars50", kind: "stars", cost: 50, stars: 50 },
   { id: "stars100", kind: "stars", cost: 100, stars: 100 },
