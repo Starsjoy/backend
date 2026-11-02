@@ -39,7 +39,7 @@ function tgUsername(req) {
 
 /**
  * ctx: { pool, bot, telegramAuth, authLimiter, deliverRewardOrder(order),
- *        notifyOrdersChannel, notifyErrorChannel, sendDeliveredOrderNotify, getStarsOrderType() }
+ *        notifyErrorChannel, sendDeliveredOrderNotify, getStarsOrderType() }
  */
 export function registerRewardsRoutes(app, ctx) {
   const { pool, telegramAuth, authLimiter } = ctx;

@@ -12,7 +12,8 @@ import {
 import { applyLedgerEntry } from "./db.js";
 import { MINI_APP_URL, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
 import { escapeTelegramHtml } from "../usdtStars/fragmentNotify.js";
-import { notifyReferralPurchase } from "../notifications/referralChannel.js";
+import { notifyReferralPurchase, notifyRedemption } from "../notifications/referralChannel.js";
+import { redeemHistoryText } from "./history.js";
 import {
   isFragmentCookieError,
   isFragmentPythonSetupError,
@@ -377,7 +378,7 @@ export async function handleRedemptionError(pool, orderId, err) {
 
 /** Yetkazish urinishidan keyin: natijaga qarab kanal xabari yoki qaytarish */
 export async function finalizeRedemption(ctx, orderId) {
-  const { pool, bot, notifyOrdersChannel, sendDeliveredOrderNotify } = ctx;
+  const { pool, bot, sendDeliveredOrderNotify } = ctx;
   const r = await pool.query(
     `SELECT o.id, o.owner_user_id, o.recipient_username, o.order_type, o.type_amount, o.status,
             u.username AS owner_username
@@ -391,17 +392,8 @@ export async function finalizeRedemption(ctx, orderId) {
   if (DELIVERED.includes(order.status)) {
     const owner = String(order.owner_username || "").replace(/^@/, "");
     const recipient = String(order.recipient_username || "").replace(/^@/, "");
-    const who =
-      owner && owner.toLowerCase() !== recipient.toLowerCase()
-        ? `@${escapeTelegramHtml(owner)} → @${escapeTelegramHtml(recipient)}`
-        : `@${escapeTelegramHtml(recipient)}`;
-    notifyOrdersChannel?.(
-      `🎁 <b>User bonus oldi!</b>\n\n` +
-        `📦 Order: #${order.id}\n` +
-        `👤 ${who}\n` +
-        `💫 ${escapeTelegramHtml(itemLabel(order))} (bonus balansdan)\n` +
-        `✅ Status: Yetkazildi`
-    );
+    const history = await redeemHistoryText(pool, { userId: order.owner_user_id, orderId: order.id });
+    notifyRedemption(bot, { owner, recipient, item: itemLabel(order), orderId: order.id, history });
     await sendDeliveredOrderNotify?.(pool, bot, order.id);
     return;
   }

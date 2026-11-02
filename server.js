@@ -7777,7 +7777,6 @@ const rewardsCtx = {
   telegramAuth,
   authLimiter,
   sendDeliveredOrderNotify,
-  notifyOrdersChannel,
   notifyErrorChannel: (text) =>
     sendOrdersChannelMessage({ text, channelId: ERROR_LOG_CHANNEL_ID, bot, botToken: BOT_TOKEN }).catch(() => {}),
   getStarsOrderType: () =>
