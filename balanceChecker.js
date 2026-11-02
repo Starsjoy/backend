@@ -20,7 +20,10 @@ import {
     parsePaymentForBrand,
     describeCards,
     listConfiguredCards,
+    listCards,
+    normalizeCardSlot,
 } from './modules/paymentSystem/index.js';
+import { createCardLimitGuard } from './modules/cardLimit/index.js';
 
 // ======================
 // 🛡️ GLOBAL ERROR HANDLERS — Process crash oldini olish
@@ -80,6 +83,25 @@ const CHAIN_TYPES = Object.keys(MATCH_URL_BY_TYPE).filter((t) => MATCH_URL_BY_TY
 // Daftar ishlamasa (DB xato) — eski zanjir o'zgarishsiz ishlayveradi.
 let ledgerPool = null;
 let ledgerSince = null;
+let cardLimitGuard = null;
+
+async function initCardLimitGuard(pool) {
+    if (cardLimitGuard) return;
+    const guard = createCardLimitGuard({
+        pool,
+        project: 'StarsJoy',
+        settingKey: 'payment_system',
+        listUzcards: () => listCards()
+            .filter((c) => c.brand === 'uzcard' && c.payable && c.configured)
+            .map((c) => ({ slot: c.slot, last4: c.suffix })),
+        fallbackSlot: () => 'uzcard1',
+        normalizeSlot: (s) => (s ? normalizeCardSlot(s) : null),
+    });
+    await guard.ensureTables();
+    guard.startWorker();
+    cardLimitGuard = guard;
+    console.log('🛡️ Karta limiti nazorati tayyor');
+}
 
 async function initSmsLedger() {
     if (!process.env.DATABASE_URL) {
@@ -96,6 +118,7 @@ async function initSmsLedger() {
         pool.on('error', (err) => console.error('❌ SMS daftari pool xatosi:', err.message));
         ledgerSince = await ensureSmsLedger(pool);
         ledgerPool = pool;
+        await initCardLimitGuard(pool).catch((e) => console.error('❌ Karta limiti nazorati ishga tushmadi:', e.message));
         console.log(`📒 SMS daftari tayyor (${ledgerSince.toISOString()} dan beri)`);
     } catch (err) {
         console.error('❌ SMS daftari ishga tushmadi — eski usulda ishlaymiz:', err.message);
@@ -561,6 +584,8 @@ export async function initBalanceClient() {
                     peerId,
                     text: msg.message,
                 });
+
+                cardLimitGuard?.handleSms(text).catch((e) => console.error('❌ Karta limiti:', e.message));
 
                 // Kiruvchi to'lov belgisi — HUMO ba'zan "+" ishlatadi
                 if (!text.includes("➕") && !/\+\s*[\d.]/.test(text)) return;
