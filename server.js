@@ -2424,6 +2424,16 @@ app.get("/api/stars/price/:stars", async (req, res) => {
 // ======================
 // 6️⃣ Admin panel - barcha transactionlarni olish (faqat stars)
 // ======================
+// Admin ro'yxatlarida qidiruv serverda: yuklangan sahifaga bog'liq emas
+function orderSearchSql(raw, params) {
+  const term = String(raw || "").trim().replace(/^@/, "");
+  if (!term) return "";
+  params.push(`%${term.replace(/[\\%_]/g, "\\$&")}%`);
+  const p = `$${params.length}`;
+  return ` AND (o.recipient_username ILIKE ${p} OR o.recipient ILIKE ${p} OR u.username ILIKE ${p}` +
+    ` OR o.owner_user_id::text ILIKE ${p} OR o.id::text ILIKE ${p} OR o.order_id ILIKE ${p})`;
+}
+
 app.get("/api/transactions/all", adminAuth, async (req, res) => {
   try {
     const hasPagination =
@@ -2433,6 +2443,8 @@ app.get("/api/transactions/all", adminAuth, async (req, res) => {
       Math.min(500, parseInt(req.query.limit, 10) || 50)
     );
     const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    const searchParams = [];
+    const searchSql = orderSearchSql(req.query.search, searchParams);
 
     let query = `
       SELECT 
@@ -2451,13 +2463,13 @@ app.get("/api/transactions/all", adminAuth, async (req, res) => {
         o.order_type
       FROM orders o
       LEFT JOIN users u ON o.owner_user_id = u.user_id
-      WHERE o.order_type IN ('stars', 'stars_usdt', 'stars_paymee')
+      WHERE o.order_type IN ('stars', 'stars_usdt', 'stars_paymee')${searchSql}
       ORDER BY o.id DESC
     `;
-    const params = [];
+    const params = searchParams.slice();
     if (hasPagination) {
       params.push(limit, offset);
-      query += ` LIMIT $1 OFFSET $2`;
+      query += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
     }
 
     const result = await pool.query(query, params);
@@ -2507,6 +2519,16 @@ app.get("/api/transactions/all", adminAuth, async (req, res) => {
       }
     });
 
+    if (searchSql) {
+      const totalRes = await pool.query(
+        `SELECT COUNT(*)::int AS c FROM orders o
+         LEFT JOIN users u ON o.owner_user_id = u.user_id
+         WHERE o.order_type IN ('stars', 'stars_usdt', 'stars_paymee')${searchSql}`,
+        searchParams
+      );
+      total = totalRes.rows[0]?.c || 0;
+    }
+
     res.json({ items: mapped, total, stats, limit, offset });
   } catch (err) {
     console.error("❌ /api/transactions/all ERROR:", err);
@@ -2530,7 +2552,9 @@ app.get("/api/transactions/status/:status", adminAuth, async (req, res) => {
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
 
   try {
-    const params = [dbStatus];
+    const searchParams = [dbStatus];
+    const searchSql = orderSearchSql(req.query.search, searchParams);
+    const params = searchParams.slice();
     let query = `SELECT 
         o.id,
         o.order_id,
@@ -2547,11 +2571,11 @@ app.get("/api/transactions/status/:status", adminAuth, async (req, res) => {
         o.order_type
       FROM orders o
       LEFT JOIN users u ON o.owner_user_id = u.user_id
-      WHERE o.status = $1 AND o.order_type IN ('stars', 'stars_usdt', 'stars_paymee')
+      WHERE o.status = $1 AND o.order_type IN ('stars', 'stars_usdt', 'stars_paymee')${searchSql}
       ORDER BY o.id DESC`;
     if (hasPagination) {
       params.push(limit, offset);
-      query += ` LIMIT $2 OFFSET $3`;
+      query += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
     }
     const result = await pool.query(query, params);
 
@@ -2599,9 +2623,10 @@ app.get("/api/transactions/status/:status", adminAuth, async (req, res) => {
     });
     // Filter uchun total — faqat shu status
     const totalRes = await pool.query(
-      `SELECT COUNT(*)::int AS c FROM orders
-       WHERE status = $1 AND order_type IN ('stars', 'stars_usdt', 'stars_paymee')`,
-      [dbStatus]
+      `SELECT COUNT(*)::int AS c FROM orders o
+       LEFT JOIN users u ON o.owner_user_id = u.user_id
+       WHERE o.status = $1 AND o.order_type IN ('stars', 'stars_usdt', 'stars_paymee')${searchSql}`,
+      searchParams
     );
     const total = totalRes.rows[0]?.c || 0;
 
@@ -4088,11 +4113,7 @@ app.get("/api/admin/premium/list", adminAuth, async (req, res) => {
       params.push(dbStatus);
       whereSql += ` AND o.status = $${params.length}`;
     }
-    if (search) {
-      params.push(`%${search}%`);
-      params.push(`%${search}%`);
-      whereSql += ` AND (o.recipient_username ILIKE $${params.length - 1} OR o.recipient ILIKE $${params.length})`;
-    }
+    whereSql += orderSearchSql(search, params);
 
     let query = `
       SELECT 
@@ -4158,7 +4179,7 @@ app.get("/api/admin/premium/list", adminAuth, async (req, res) => {
 
     // Filter uchun total
     const totalRes = await pool.query(
-      `SELECT COUNT(*)::int AS c FROM orders o ${whereSql}`,
+      `SELECT COUNT(*)::int AS c FROM orders o LEFT JOIN users u ON o.owner_user_id = u.user_id ${whereSql}`,
       params
     );
     const total = totalRes.rows[0]?.c || 0;
@@ -4419,14 +4440,13 @@ app.get("/api/admin/users", adminAuth, async (req, res) => {
     // faqat oxirgi 1000 ta qaytadi, DB butunlay skanerlanmaydi.
     const LEGACY_CAP = 1000;
     const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
-    const searchRaw = (req.query.search || "").trim();
+    const searchRaw = String(req.query.search || "").trim().replace(/^@/, "");
 
     const params = [];
     let whereSql = "";
     if (searchRaw) {
-      params.push(`%${searchRaw}%`);
-      params.push(`%${searchRaw}%`);
-      whereSql = ` WHERE username ILIKE $1 OR referral_code ILIKE $2`;
+      params.push(`%${searchRaw.replace(/[\\%_]/g, "\\$&")}%`);
+      whereSql = ` WHERE username ILIKE $1 OR referral_code ILIKE $1 OR user_id::text ILIKE $1`;
     }
 
     // Bonus balansi katta userlar tepada, teng bo'lsa — yangilari oldin
@@ -6466,11 +6486,7 @@ app.get("/api/admin/gift/list", adminAuth, async (req, res) => {
       params.push(dbStatus);
       whereSql += ` AND o.status = $${params.length}`;
     }
-    if (search) {
-      params.push(`%${search}%`);
-      params.push(`%${search}%`);
-      whereSql += ` AND (o.owner_user_id::text ILIKE $${params.length - 1} OR o.recipient_username ILIKE $${params.length})`;
-    }
+    whereSql += orderSearchSql(search, params);
 
     let query = `
       SELECT 
@@ -6532,7 +6548,7 @@ app.get("/api/admin/gift/list", adminAuth, async (req, res) => {
     });
 
     const totalRes = await pool.query(
-      `SELECT COUNT(*)::int AS c FROM orders o ${whereSql}`,
+      `SELECT COUNT(*)::int AS c FROM orders o LEFT JOIN users u ON o.owner_user_id = u.user_id ${whereSql}`,
       params
     );
     const total = totalRes.rows[0]?.c || 0;
