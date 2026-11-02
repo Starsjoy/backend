@@ -12,6 +12,7 @@ import {
 import { applyLedgerEntry } from "./db.js";
 import { MINI_APP_URL, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
 import { escapeTelegramHtml } from "../usdtStars/fragmentNotify.js";
+import { notifyReferralPurchase } from "../notifications/referralChannel.js";
 import {
   isFragmentCookieError,
   isFragmentPythonSetupError,
@@ -174,6 +175,17 @@ async function processRewardsForOrder(ctx, orderId) {
   if (res) {
     console.log(`🎁 Referal bonus +${referralPoints}⭐: referrer=${referrerId}, friend=${buyerId}, order=#${order.id}`);
     await notifyCredit(ctx, referrerId, "referral", referralPoints, friend.username || null);
+    const ref = await pool
+      .query(`SELECT username FROM users WHERE user_id = $1`, [referrerId])
+      .catch(() => ({ rows: [] }));
+    await notifyReferralPurchase(ctx.bot, {
+      referrerUsername: ref.rows[0]?.username,
+      referrerId,
+      friendUsername: friend.username,
+      friendId: buyerId,
+      order,
+      points: referralPoints,
+    });
   }
 }
 

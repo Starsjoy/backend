@@ -5,6 +5,7 @@ import { upsertUserFromTelegram } from './modules/users/upsertUser.js';
 import { linkReferrerOnSignup, parseReferralPayload } from './modules/users/referralLink.js';
 import { markUserSubscribed } from './modules/users/subscription.js';
 import { scheduleChannelInvite } from './modules/notifications/channelInvite.js';
+import { notifyReferralStart } from './modules/notifications/referralChannel.js';
 import { handleSourceStart } from './modules/sources/index.js';
 const { Pool } = pg;
 
@@ -165,7 +166,10 @@ bot.start(async (ctx) => {
           console.error("❌ Referal bog'lashda xato:", err.message);
           return null;
         });
-        if (referrer) console.log(`🔗 Referal bog'landi (bot): ${savedUsername} -> ${referrer}`);
+        if (referrer) {
+          console.log(`🔗 Referal bog'landi (bot): ${savedUsername} -> ${referrer}`);
+          notifyReferralStart(bot, { referrerUsername: referrer, friendUsername: savedUsername, friendId: userId });
+        }
       }
     }
   } catch (err) {

@@ -42,6 +42,7 @@ import {
   registerSettingsRoutes,
 } from "./modules/settings/index.js";
 import { upsertUserFromTelegram } from "./modules/users/upsertUser.js";
+import { notifyReferralStart } from "./modules/notifications/referralChannel.js";
 import { buildReferralLink } from "./modules/users/referralLink.js";
 import { markUserSubscribed } from "./modules/users/subscription.js";
 import { runChannelInviteJob } from "./modules/notifications/channelInvite.js";
@@ -4876,6 +4877,12 @@ app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) =
             console.log(
               `🔗 Referral bog'landi (havola): ${savedUsername} -> ${referrerUsername}`
             );
+            notifyReferralStart(bot, {
+              referrerUsername,
+              referrerId: referrer_user_id,
+              friendUsername: savedUsername,
+              friendId: tgUserId,
+            });
           }
         } catch (err) {
           console.error("❌ Auto-link referral error:", err.message);
