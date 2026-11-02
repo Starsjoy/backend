@@ -4095,6 +4095,54 @@ app.get("/api/premium/transactions/:id", telegramAuth, async (req, res) => {
 // ===============================
 // 🔹 ADMIN — PREMIUM LIST   admin panel-------------------------------------------------------------------
 // ===============================
+// Admin Warning: yetkazilmagan buyurtmalar va qotib qolgan processing
+const WARNING_ORDER_TYPES = `('stars', 'stars_usdt', 'stars_paymee', 'premium', 'premium_usdt', 'premium_paymee', 'gift')`;
+const WARNING_STUCK_SQL = `(o.status = 'processing' AND o.created_at < NOW() - INTERVAL '10 minutes')`;
+
+app.get("/api/admin/warnings", adminAuth, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(500, parseInt(req.query.limit, 10) || 50));
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    const filter = String(req.query.filter || "all");
+    const statusSql =
+      filter === "failed" ? `o.status = 'failed'`
+      : filter === "error" ? `o.status = 'error'`
+      : filter === "processing" ? WARNING_STUCK_SQL
+      : `(o.status IN ('failed', 'error') OR ${WARNING_STUCK_SQL})`;
+    const baseSql = `FROM orders o
+      LEFT JOIN users u ON o.owner_user_id = u.user_id
+      WHERE o.order_type IN ${WARNING_ORDER_TYPES}`;
+
+    const searchParams = [];
+    const searchSql = orderSearchSql(req.query.search, searchParams);
+    const whereSql = `${baseSql} AND ${statusSql}${searchSql}`;
+
+    const list = await pool.query(
+      `SELECT o.id, o.order_id, o.owner_user_id, u.username AS sender_username,
+        o.recipient_username AS username, o.recipient, o.order_type, o.type_amount,
+        o.summ AS amount, o.payment_method, o.payment_status, o.status,
+        o.transaction_id, o.created_at
+       ${whereSql}
+       ORDER BY o.id DESC
+       LIMIT $${searchParams.length + 1} OFFSET $${searchParams.length + 2}`,
+      [...searchParams, limit, offset]
+    );
+    const totalRes = await pool.query(`SELECT COUNT(*)::int AS c ${whereSql}`, searchParams);
+    const statsRes = await pool.query(
+      `SELECT COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE o.status = 'failed')::int AS failed,
+        COUNT(*) FILTER (WHERE o.status = 'error')::int AS error,
+        COUNT(*) FILTER (WHERE o.status = 'processing')::int AS processing
+       ${baseSql} AND (o.status IN ('failed', 'error') OR ${WARNING_STUCK_SQL})`
+    );
+
+    res.json({ success: true, items: list.rows, total: totalRes.rows[0]?.c || 0, stats: statsRes.rows[0], limit, offset });
+  } catch (err) {
+    console.error("❌ /api/admin/warnings ERROR:", err);
+    res.status(500).json({ error: "Server xatosi" });
+  }
+});
+
 app.get("/api/admin/premium/list", adminAuth, async (req, res) => {
   try {
     const { status, search } = req.query;
@@ -4221,7 +4269,7 @@ app.patch("/api/admin/premium/update/:id", adminAuth, async (req, res) => {
     const result = await pool.query(
       `UPDATE orders
        SET status=$1
-       WHERE id=$2 AND order_type='premium'
+       WHERE id=$2 AND order_type IN ('premium', 'premium_usdt', 'premium_paymee')
        RETURNING *`,
       [status, id]
     );
