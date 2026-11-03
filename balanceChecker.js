@@ -6,6 +6,7 @@ import { NewMessage } from 'telegram/events/index.js';
 import fetch from 'node-fetch';
 import express from 'express';
 import pg from 'pg';
+import { notifyIfUnpaidEverywhere } from './modules/payments/paymentCheck.js';
 import {
     ensureSmsLedger,
     parseSmsTime,
@@ -662,22 +663,24 @@ export async function initBalanceClient() {
             const p = pendingUzcardPayments[i];
             // 5 daqiqadan oshgan bo'lsa (5 * 60 * 1000 = 480000 ms)
             if (now - p.timestamp > 480000) {
-                console.log(`⚠️ Tizimda qolib ketgan to'lov (${p.amount})! Ikkala kanalda ham topilmadi - Error kanalga yuborilmoqda...`);
-                
-                if (BOT_TOKEN && ERROR_LOG_CHANNEL_ID) {
-                    const message = `⚠️ <b>XATO tolov - 5 daqiqa ichida topilmadi</b>\n\n📝 <b>To'lov xabari:</b>\n<code>${p.text}</code>\n\n💰 <b>Summa:</b> ${p.amount.toLocaleString()} so'm\n\n📡 <b>Kuzatilgan kanallar:</b>\n• ORDERS_CHANNEL\n• PREMIUMSEND_CHANNEL\n\n📌 Ikkala kanalda ham bu summaga mos order topilmadi!\nIltimos, bu to'lov nima uchun kelganini tekshiring!`;
-                    fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            chat_id: ERROR_LOG_CHANNEL_ID,
-                            text: message,
-                            parse_mode: 'HTML'
-                        })
-                    }).catch(e => console.error("Error kanalga SMS jo'natish xatosi:", e));
-                }
-
                 pendingUzcardPayments.splice(i, 1);
+                // Boshqa loyihada yopilgan to'lov uchun ogohlantirish yuborilmaydi
+                notifyIfUnpaidEverywhere(p, () => {
+                    console.log(`⚠️ Tizimda qolib ketgan to'lov (${p.amount})! Ikkala kanalda ham topilmadi - Error kanalga yuborilmoqda...`);
+                
+                    if (BOT_TOKEN && ERROR_LOG_CHANNEL_ID) {
+                        const message = `⚠️ <b>XATO tolov - 5 daqiqa ichida topilmadi</b>\n\n📝 <b>To'lov xabari:</b>\n<code>${p.text}</code>\n\n💰 <b>Summa:</b> ${p.amount.toLocaleString()} so'm\n\n📡 <b>Kuzatilgan kanallar:</b>\n• ORDERS_CHANNEL\n• PREMIUMSEND_CHANNEL\n\n📌 Ikkala kanalda ham bu summaga mos order topilmadi!\nIltimos, bu to'lov nima uchun kelganini tekshiring!`;
+                        fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                chat_id: ERROR_LOG_CHANNEL_ID,
+                                text: message,
+                                parse_mode: 'HTML'
+                            })
+                        }).catch(e => console.error("Error kanalga SMS jo'natish xatosi:", e));
+                    }
+                }).catch((e) => console.error("To'lov tekshiruvi xatosi:", e.message));
             }
         }
     }, 60000);
