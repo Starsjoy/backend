@@ -116,8 +116,8 @@ const MINI_APP_URL = "https://vitahealth.uz";
 function getStartKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.webApp("START", `${MINI_APP_URL}/`)],
-    [Markup.button.webApp("Premium", `${MINI_APP_URL}/`)],
-    [Markup.button.webApp("Stars", `${MINI_APP_URL}/`)],
+    [Markup.button.webApp("💎 Premium", `${MINI_APP_URL}/`)],
+    [Markup.button.webApp("⭐ Stars", `${MINI_APP_URL}/`)],
   ]);
 }
 
