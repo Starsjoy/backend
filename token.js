@@ -112,11 +112,12 @@ Quyida boshqaruv paneliga o‘tishingiz mumkin:
 // Oddiy user uchun start klaviaturasi: START, Premium, Stars
 // ===============================
 const MINI_APP_URL = "https://vitahealth.uz";
+// Uchala tugma ham Mini App bosh sahifasini ochadi (foydalanuvchi qarori)
 function getStartKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.webApp("START", `${MINI_APP_URL}/`)],
-    [Markup.button.webApp("Premium", `${MINI_APP_URL}/premium`)],
-    [Markup.button.webApp("Stars", `${MINI_APP_URL}/stars`)],
+    [Markup.button.webApp("Premium", `${MINI_APP_URL}/`)],
+    [Markup.button.webApp("Stars", `${MINI_APP_URL}/`)],
   ]);
 }
 
