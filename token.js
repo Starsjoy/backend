@@ -109,6 +109,19 @@ Quyida boshqaruv paneliga o‘tishingiz mumkin:
 
 
 // ===============================
+// Oddiy user uchun start klaviaturasi: START, Premium, Stars
+// ===============================
+const MINI_APP_URL = "https://vitahealth.uz";
+function getStartKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.webApp("START", `${MINI_APP_URL}/`)],
+    [Markup.button.webApp("Premium", `${MINI_APP_URL}/premium`)],
+    [Markup.button.webApp("Stars", `${MINI_APP_URL}/stars`)],
+  ]);
+}
+
+
+// ===============================
 // Xavfsiz reply funksiyasi
 // ===============================
 async function safeReply(ctx, text, keyboard) {
@@ -193,16 +206,7 @@ bot.start(async (ctx) => {
   }
 
   // Obuna MAJBURIY EMAS: hammaga darhol START
-  await safeReply(
-    ctx,
-    getStartText(),
-    Markup.inlineKeyboard([
-        [
-          Markup.button.webApp("START", "https://vitahealth.uz/")
-        ],
-        
-    ])
-  );
+  await safeReply(ctx, getStartText(), getStartKeyboard());
 
   // Kanalda bo'lsa — belgilaymiz (missiya/referal hisobi); bo'lmasa — ixtiyoriy taklif
   // 1 soatdan keyin, userning tilida (server.js dagi navbat job'i yuboradi)
@@ -245,16 +249,7 @@ bot.action('check_subscription', async (ctx) => {
     await ctx.deleteMessage();
   } catch (e) {}
 
-  await safeReply(
-    ctx,
-    getStartText(),
-    Markup.inlineKeyboard([
-        [
-          Markup.button.webApp("START", "https://vitahealth.uz/")
-        ],
-        
-    ])
-  );
+  await safeReply(ctx, getStartText(), getStartKeyboard());
 
   try {
     await ctx.answerCbQuery('✅ Obuna tasdiqlandi!');
