@@ -25,6 +25,7 @@ import {
     normalizeCardSlot,
 } from './modules/paymentSystem/index.js';
 import { createCardLimitGuard } from './modules/cardLimit/index.js';
+import { createSavingsCard } from './modules/savingsCard/index.js';
 
 // ======================
 // 🛡️ GLOBAL ERROR HANDLERS — Process crash oldini olish
@@ -102,6 +103,30 @@ async function initCardLimitGuard(pool) {
     guard.startWorker();
     cardLimitGuard = guard;
     console.log('🛡️ Karta limiti nazorati tayyor');
+    await initSavingsCard(pool);
+}
+
+// Jamg'arma kartasi (uzcard3): har 08:00/20:00/00:00 da tushumning SAVINGS_PERCENT foizi shu kartaga yig'iladi
+async function initSavingsCard(pool) {
+    if (process.env.SAVINGS_ENABLED !== '1') return;
+    const card = listCards().find((c) => c.slot === 'uzcard3');
+    if (!card?.payable || !card.configured) {
+        console.error('⚠️ Jamg\'arma: uzcard3 sozlanmagan — ishga tushmadi');
+        return;
+    }
+    const savings = createSavingsCard({
+        pool,
+        settingKey: 'payment_system',
+        savingsSlot: 'uzcard3',
+        savingsLast4: card.suffix,
+        percent: Number(process.env.SAVINGS_PERCENT || 6),
+        listUzcards: () => listCards()
+            .filter((c) => c.brand === 'uzcard' && c.payable && c.configured)
+            .map((c) => ({ slot: c.slot, last4: c.suffix })),
+    });
+    await savings.ensureTables();
+    savings.startWorker();
+    console.log(`🏦 Jamg'arma kartasi nazorati tayyor (***${card.suffix}, ${process.env.SAVINGS_PERCENT || 6}%)`);
 }
 
 async function initSmsLedger() {

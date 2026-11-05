@@ -1,3 +1,5 @@
+import { createSavingsCard } from "../savingsCard/index.js";
+import { listCards } from "../paymentSystem/index.js";
 import {
   getPublicAppConfig,
   setMaintenance,
@@ -105,6 +107,28 @@ export function registerSettingsRoutes(app, ctx) {
       res.json({ success: true, cards: await getPaymentCardsForAdmin(pool) });
     } catch (err) {
       console.error("❌ GET /api/admin/payment-cards:", err.message);
+      res.status(500).json({ error: "Server xatosi" });
+    }
+  });
+
+  /** Admin panel: jamg'arma kartasi holati (faqat o'qish; worker balanceChecker'da) */
+  app.get("/api/admin/savings", adminAuth, async (_req, res) => {
+    try {
+      const card = listCards().find((c) => c.slot === "uzcard3");
+      if (process.env.SAVINGS_ENABLED !== "1" || !card?.payable) return res.json({ success: true, enabled: false });
+      const savings = createSavingsCard({
+        pool,
+        settingKey: "payment_system",
+        savingsSlot: "uzcard3",
+        savingsLast4: card.suffix,
+        percent: Number(process.env.SAVINGS_PERCENT || 6),
+        listUzcards: () => [],
+      });
+      // Jadval hali yo'q (worker birinchi marta ishga tushmagan) — o'chiq deb ko'rsatiladi
+      const status = await savings.status().catch((e) => (e.code === "42P01" ? null : Promise.reject(e)));
+      res.json({ success: true, enabled: Boolean(status), ...(status || {}) });
+    } catch (err) {
+      console.error("❌ GET /api/admin/savings:", err.message);
       res.status(500).json({ error: "Server xatosi" });
     }
   });
