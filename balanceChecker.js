@@ -25,7 +25,7 @@ import {
     normalizeCardSlot,
 } from './modules/paymentSystem/index.js';
 import { createCardLimitGuard } from './modules/cardLimit/index.js';
-import { createSavingsCard } from './modules/savingsCard/index.js';
+import { createSavingsCard, peersFromEnv } from './modules/savingsCard/index.js';
 
 // ======================
 // 🛡️ GLOBAL ERROR HANDLERS — Process crash oldini olish
@@ -120,13 +120,14 @@ async function initSavingsCard(pool) {
         savingsSlot: 'uzcard3',
         savingsLast4: card.suffix,
         percent: Number(process.env.SAVINGS_PERCENT || 6),
+        peers: peersFromEnv(),
         listUzcards: () => listCards()
             .filter((c) => c.brand === 'uzcard' && c.payable && c.configured)
             .map((c) => ({ slot: c.slot, last4: c.suffix })),
     });
     await savings.ensureTables();
     savings.startWorker();
-    console.log(`🏦 Jamg'arma kartasi nazorati tayyor (***${card.suffix}, ${process.env.SAVINGS_PERCENT || 6}%)`);
+    console.log(`🏦 Jamg'arma kartasi nazorati tayyor (***${card.suffix}, barcha loyihalar tushumining ${process.env.SAVINGS_PERCENT || 6}%)`);
 }
 
 async function initSmsLedger() {

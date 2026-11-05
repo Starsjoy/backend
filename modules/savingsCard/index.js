@@ -3,8 +3,9 @@
  *
  * Qoida (foydalanuvchi bilan kelishilgan, 2026-11-06):
  *  - Kun uch davrga bo'linadi, hisob nuqtalari Toshkent vaqti bilan 08:00, 20:00 va 00:00.
- *  - Har hisob nuqtasida oldingi davrda StarsJoy kartalariga tushgan pul (sms_payments, decision='matched')
- *    hisoblanadi. Uning SAVINGS_PERCENT foizi (standart 6%) — jamg'arma maqsadi.
+ *  - Har hisob nuqtasida oldingi davrdagi BARCHA loyihalar (StarsJoy, UzGets, PremiumSend, Premium24) karta
+ *    tushumi hisoblanadi: to'langan buyurtmalar, bonus/admin/USDT'siz. Uning SAVINGS_PERCENT foizi (standart 6%)
+ *    — jamg'arma maqsadi. Karta esa faqat StarsJoy'da almashadi.
  *    6% = sof foydaning (12%) yarmi: *5830 ga tushgan buyurtmalarning tannarxi aylanmadan to'lanadi,
  *    shuning uchun 12% olinsa foydaning deyarli hammasi jamg'armaga ketardi.
  *  - Qarz = barcha maqsadlar − jamg'arma kartasiga (uzcard3) tushgan StarsJoy to'lovlari. Qarz bo'lsa
@@ -12,9 +13,13 @@
  *    Ortiqcha tushgani (almashish paytida to'lov oynasi ochiq qolganlar) keyingi davrdan ayiriladi.
  *  - Kartani admin yoki limit avtomatikasi almashtirsa — keyingi hisob nuqtasigacha aralashilmaydi.
  *  - Jamg'arma kartasi oxirgi 3 kunda limit olgan bo'lsa yoqilmaydi; qaytishda limitdagi karta tanlanmaydi.
+ *  - Xabar faqat @shavkatov_ff ga va faqat ikki holatda: karta jamg'armaga o'tganda (kutilayotgan summa)
+ *    va avvalgi kartaga qaytganda (shu safar tushgan summa).
  *
  * Holat bazada (savings_checkpoints, savings_state): balanceChecker alohida jarayon, restartda yo'qolmasin.
  */
+import fs from "fs";
+import pg from "pg";
 import { REST_MS } from "../cardLimit/index.js";
 
 const TZ_OFFSET_MS = 5 * 60 * 60 * 1000; // Asia/Tashkent, yozgi vaqt yo'q
@@ -22,10 +27,38 @@ const CHECKPOINT_HOURS = [0, 8, 20];
 const WORKER_INTERVAL_MS = 60 * 1000;
 const MIN_OUTSTANDING = 1000; // so'm: bundan kichik qarz uchun karta almashtirilmaydi
 const ADVISORY_LOCK_KEY = 5830006;
-const DEFAULT_OWNER_ID = "6418750920"; // @shavkatov_ff
+const OWNER_ID = "6418750920"; // @shavkatov_ff — xabarlar faqat shu akkauntga (foydalanuvchi talabi)
+
+/** Loyiha tushumi: to'langan karta buyurtmalari (bonus, referal, admin va USDT buyurtmalarisiz) */
+const REVENUE_SQL = `
+  SELECT COALESCE(SUM(summ), 0)::bigint AS s FROM orders
+  WHERE payment_status = 'paid' AND summ > 0
+    AND COALESCE(payment_method, '') NOT IN ('bonus', 'referral', 'admin_manual')
+    AND order_type NOT LIKE '%usdt%'
+    AND created_at >= $1 AND created_at < $2`;
 
 const fmt = (n) => Math.round(Number(n) || 0).toLocaleString("ru-RU").replace(/ /g, " ");
-const tashkentTime = (d) => new Date(d.getTime() + TZ_OFFSET_MS).toISOString().slice(11, 16);
+
+const PEER_NAMES = { uzgets_backend: "UzGets", premiumsent_backend: "PremiumSend", premium24_backend: "Premium24" };
+
+/**
+ * Boshqa loyihalar bazasi: PAYMENT_PEER_ENV_FILES dagi .env fayllar (shu serverdagi loyihalar), faqat o'qiladi.
+ * Nom papkadan: /root/uzgets_backend/.env → UzGets.
+ */
+export function peersFromEnv() {
+  return String(process.env.PAYMENT_PEER_ENV_FILES || "")
+    .split(",")
+    .map((f) => f.trim())
+    .filter(Boolean)
+    .map((file) => {
+      const m = fs.readFileSync(file, "utf8").match(/^DATABASE_URL=(.*)$/m);
+      const dir = file.split("/").slice(-2, -1)[0];
+      if (!m) throw new Error(`${file} da DATABASE_URL yo'q`);
+      const pool = new pg.Pool({ connectionString: m[1].trim().replace(/^["']|["']$/g, ""), max: 1, idleTimeoutMillis: 30000 });
+      pool.on("error", (err) => console.error(`⚠️ Jamg'arma (${dir}) pool xatosi:`, err.message));
+      return { name: PEER_NAMES[dir] || dir, pool };
+    });
+}
 
 /** (from, to] oralig'idagi hisob nuqtalari, o'sish tartibida */
 export function checkpointsBetween(from, to) {
@@ -74,9 +107,10 @@ export function createSavingsCard({
   savingsLast4,
   listUzcards, // () => [{ slot, last4 }]
   percent = 6,
+  projectName = "StarsJoy",
+  peers = [], // [{ name, pool }] — boshqa loyihalar bazasi (tushum hisobi uchun)
   fetchImpl = (...args) => fetch(...args),
 }) {
-  const ownerId = () => String(process.env.CARD_ALERT_USER_ID || DEFAULT_OWNER_ID);
 
   async function telegram(chatId, text) {
     const res = await fetchImpl(`https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`, {
@@ -87,7 +121,7 @@ export function createSavingsCard({
     const data = await res.json().catch(() => ({}));
     if (!data.ok) throw new Error(data.description || `HTTP ${res.status}`);
   }
-  const alertOwner = (text) => telegram(ownerId(), text).catch((e) => console.error("❌ Jamg'arma xabari:", e.message));
+  const alertOwner = (text) => telegram(OWNER_ID, text).catch((e) => console.error("❌ Jamg'arma xabari:", e.message));
 
   async function ensureTables() {
     await pool.query(`
@@ -107,16 +141,18 @@ export function createSavingsCard({
         activated_at TIMESTAMPTZ,
         override_until TIMESTAMPTZ
       )`);
+    await pool.query(`ALTER TABLE savings_state ADD COLUMN IF NOT EXISTS collected_at_activation BIGINT NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE savings_checkpoints ADD COLUMN IF NOT EXISTS breakdown JSONB`);
     await pool.query(`INSERT INTO savings_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
   }
 
+  /** Barcha loyihalar tushumi. Bitta loyiha bazasi javob bermasa — xato: hisob nuqtasi keyingi tickda qayta urinadi */
   async function revenueBetween(client, from, to) {
-    const r = await client.query(
-      `SELECT COALESCE(SUM(amount), 0)::bigint AS s FROM sms_payments
-       WHERE decision = 'matched' AND received_at >= $1 AND received_at < $2`,
-      [from, to]
+    const sources = [{ name: projectName, db: client }, ...peers.map((p) => ({ name: p.name, db: p.pool }))];
+    const parts = await Promise.all(
+      sources.map(async (src) => ({ name: src.name, sum: Number((await src.db.query(REVENUE_SQL, [from, to])).rows[0].s) }))
     );
-    return Number(r.rows[0].s);
+    return { total: parts.reduce((a, p) => a + p.sum, 0), breakdown: Object.fromEntries(parts.map((p) => [p.name, p.sum])) };
   }
 
   /** Umumiy hisob: maqsadlar, jamg'arma kartasiga tushgani, qarz */
@@ -161,17 +197,12 @@ export function createSavingsCard({
       let periodStart = last ? new Date(last) : startedAt;
 
       for (const cp of checkpointsBetween(periodStart, now)) {
-        const revenue = await revenueBetween(client, periodStart, cp);
-        const target = Math.round((revenue * percent) / 100);
+        const { total, breakdown } = await revenueBetween(client, periodStart, cp);
+        const target = Math.round((total * percent) / 100);
         await client.query(
-          `INSERT INTO savings_checkpoints (checkpoint_at, period_start, revenue, target)
-           VALUES ($1, $2, $3, $4) ON CONFLICT (checkpoint_at) DO NOTHING`,
-          [cp, periodStart, revenue, target]
-        );
-        messages.push(
-          `🏦 Jamg'arma hisobi (${tashkentTime(periodStart)}–${tashkentTime(cp)})\n\n` +
-            `Tushum: ${fmt(revenue)} so'm\nSof foyda (12%): ${fmt(revenue * 0.12)} so'm\n` +
-            `Jamg'armaga (${percent}%): ${fmt(target)} so'm`
+          `INSERT INTO savings_checkpoints (checkpoint_at, period_start, revenue, target, breakdown)
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (checkpoint_at) DO NOTHING`,
+          [cp, periodStart, total, target, breakdown]
         );
         periodStart = cp;
       }
@@ -201,25 +232,30 @@ export function createSavingsCard({
         const prev = currentSlot === savingsSlot ? st.prev_slot || "uzcard1" : currentSlot;
         await setSlot(client, savingsSlot);
         await client.query(
-          `UPDATE savings_state SET active = true, prev_slot = $1, activated_at = NOW(), override_until = NULL WHERE id = 1`,
-          [prev]
+          `UPDATE savings_state SET active = true, prev_slot = $1, activated_at = NOW(), override_until = NULL,
+             collected_at_activation = $2 WHERE id = 1`,
+          [prev, sum.collected]
         );
-        messages.push(`💳 Jamg'arma kartasi *${savingsLast4} yoqildi.\n\nYig'iladi: ${fmt(sum.outstanding)} so'm. To'lgach *${last4Of(prev)} ga qaytadi.`);
+        messages.push(
+          `💳 StarsJoy kartasi *${savingsLast4} ga o'tdi\n\n` +
+            `Kutilayotgan tushum: ${fmt(sum.outstanding)} so'm\n` +
+            `(barcha loyihalar tushumining ${percent}%, foydaning yarmi)\n\n` +
+            `To'lgach *${last4Of(prev)} ga qaytadi.`
+        );
       } else if (decision.action === "restore") {
         await setSlot(client, decision.slot);
         await client.query(`UPDATE savings_state SET active = false, activated_at = NULL WHERE id = 1`);
+        const thisTime = sum.collected - Number(st.collected_at_activation || 0);
         messages.push(
-          `✅ Jamg'arma to'ldi: *${savingsLast4} ga jami ${fmt(sum.collected)} so'm tushdi` +
-            (sum.outstanding < 0 ? ` (${fmt(-sum.outstanding)} so'm ortiqcha, keyingi davrdan ayiriladi)` : "") +
-            `.\n\nKarta *${last4Of(decision.slot)} ga qaytdi.`
+          `✅ StarsJoy kartasi *${last4Of(decision.slot)} ga qaytdi\n\n` +
+            `*${savingsLast4} ga tushdi: ${fmt(thisTime)} so'm` +
+            (sum.outstanding < 0 ? `\n(${fmt(-sum.outstanding)} so'm ortiqcha — keyingi davrdan ayiriladi)` : "")
         );
       } else if (decision.action === "stop") {
         const until = nextCheckpoint(now);
+        // Xabar yuborilmaydi (faqat almashish/qaytish xabarlari kelishilgan); holat admin panelda ko'rinadi
         await client.query(`UPDATE savings_state SET active = false, activated_at = NULL, override_until = $1 WHERE id = 1`, [until]);
-        messages.push(
-          `⏸ Jamg'arma to'xtatildi: karta *${last4Of(currentSlot)} ga almashtirilgan (qo'lda yoki limit).\n\n` +
-            `Qolgan ${fmt(Math.max(sum.outstanding, 0))} so'm ${tashkentTime(until)} dagi hisobdan keyin yig'iladi.`
-        );
+        console.log(`⏸ Jamg'arma to'xtatildi: karta ${currentSlot} ga almashtirilgan, ${until.toISOString()} gacha`);
       }
 
       await client.query("COMMIT");
@@ -239,7 +275,7 @@ export function createSavingsCard({
     if (!st) return null;
     const sum = await totals(pool, new Date(st.started_at));
     const recent = await pool.query(
-      `SELECT checkpoint_at, period_start, revenue, target FROM savings_checkpoints ORDER BY checkpoint_at DESC LIMIT 6`
+      `SELECT checkpoint_at, period_start, revenue, target, breakdown FROM savings_checkpoints ORDER BY checkpoint_at DESC LIMIT 6`
     );
     return {
       percent,
