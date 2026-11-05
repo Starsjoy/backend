@@ -1,5 +1,5 @@
 /**
- * To'lov kartalari registri — 3 slot: uzcard1, uzcard2 (zaxira), humo1
+ * To'lov kartalari registri — 4 slot: uzcard1, uzcard2 (zaxira), uzcard3 (qo'lda yoqiladigan zaxira), humo1
  *
  * Admin panel switch orqali qaysi karta mijozga ko'rsatilishi DB da saqlanadi
  * (settings.payment_system).
@@ -13,9 +13,9 @@
  * o'zgarsa restartdan keyin darhol qo'llanadi.
  */
 
-/** @typedef {"uzcard1"|"uzcard2"|"humo1"} CardSlot */
+/** @typedef {"uzcard1"|"uzcard2"|"uzcard3"|"humo1"} CardSlot */
 
-export const CARD_SLOTS = ["uzcard1", "uzcard2", "humo1"];
+export const CARD_SLOTS = ["uzcard1", "uzcard2", "uzcard3", "humo1"];
 
 /** Eski qiymatlar bilan moslik (DB da "uzcard"/"humo" turgan bo'lishi mumkin) */
 const LEGACY_SLOT_ALIASES = { uzcard: "uzcard1", humo: "humo1" };
@@ -41,6 +41,18 @@ const SLOT_DEFS = [
     numberKeys: ["TOPUP_CARD_NUMBER_UZCARD2"],
     nameKeys: ["TOPUP_CARD_NAME_UZCARD2"],
     suffixKeys: ["TARGET_CARD_SUFFIX_UZCARD2"],
+    chatKeys: ["UZCARD_CHAT_ID"],
+  },
+  {
+    // Uchinchi UZCARD: faqat admin paneldan qo'lda yoqiladi. Limit avtomatikasi (cardLimit) uzcard1 ⇄ uzcard2
+    // orasida ishlaydi: ro'yxatda keyin turgani uchun "ikkinchi karta" sifatida tanlanmaydi
+    slot: "uzcard3",
+    brand: "uzcard",
+    label: "UZCARD",
+    title: "UZCARD",
+    numberKeys: ["TOPUP_CARD_NUMBER_UZCARD3"],
+    nameKeys: ["TOPUP_CARD_NAME_UZCARD3"],
+    suffixKeys: ["TARGET_CARD_SUFFIX_UZCARD3"],
     chatKeys: ["UZCARD_CHAT_ID"],
   },
   {
