@@ -8,7 +8,7 @@
  *    — jamg'arma maqsadi. Karta esa faqat StarsJoy'da almashadi.
  *    6% = sof foydaning (12%) yarmi: *5830 ga tushgan buyurtmalarning tannarxi aylanmadan to'lanadi,
  *    shuning uchun 12% olinsa foydaning deyarli hammasi jamg'armaga ketardi.
- *  - Qarz = barcha maqsadlar − jamg'arma kartasiga (uzcard3) tushgan StarsJoy to'lovlari. Qarz bo'lsa
+ *  - Qarz = barcha maqsadlar − jamg'arma kartasiga (uzcard3) tushgan barcha pul. Qarz SAVINGS_MIN (50 000) dan oshsa
  *    mijozlarga jamg'arma kartasi ko'rsatiladi, qarz yopilgach avvalgi kartaga qaytiladi.
  *    Ortiqcha tushgani (almashish paytida to'lov oynasi ochiq qolganlar) keyingi davrdan ayiriladi.
  *  - Kartani admin yoki limit avtomatikasi almashtirsa — keyingi hisob nuqtasigacha aralashilmaydi.
@@ -25,7 +25,9 @@ import { REST_MS } from "../cardLimit/index.js";
 const TZ_OFFSET_MS = 5 * 60 * 60 * 1000; // Asia/Tashkent, yozgi vaqt yo'q
 const CHECKPOINT_HOURS = [0, 8, 20];
 const WORKER_INTERVAL_MS = 60 * 1000;
-const MIN_OUTSTANDING = 1000; // so'm: bundan kichik qarz uchun karta almashtirilmaydi
+// Bundan kichik qarz uchun karta almashtirilmaydi — keyingi davrga qo'shiladi (kechasi tushum kam bo'lganda
+// 7 ming so'm uchun karta soatlab *5830 da turib qolmasin)
+const MIN_OUTSTANDING = () => Number(process.env.SAVINGS_MIN || 50000);
 const ADVISORY_LOCK_KEY = 5830006;
 const OWNER_ID = "6418750920"; // @shavkatov_ff — xabarlar faqat shu akkauntga (foydalanuvchi talabi)
 
@@ -94,7 +96,7 @@ export function decideSavingsAction({
     const candidates = [prevSlot, ...uzcardSlots].filter((s) => s && s !== savingsSlot && !limitedSlots.includes(s));
     return candidates.length ? { action: "restore", slot: candidates[0] } : { action: "none", reason: "no_free_card" };
   }
-  if (outstanding < MIN_OUTSTANDING) return { action: "none" };
+  if (outstanding < MIN_OUTSTANDING()) return { action: "none" };
   if (overrideUntil && now < overrideUntil) return { action: "none", reason: "override" };
   if (savingsLimited) return { action: "none", reason: "savings_limited" };
   return { action: "activate", slot: savingsSlot };
@@ -117,11 +119,25 @@ export function createSavingsCard({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(15000),
     });
     const data = await res.json().catch(() => ({}));
     if (!data.ok) throw new Error(data.description || `HTTP ${res.status}`);
   }
-  const alertOwner = (text) => telegram(OWNER_ID, text).catch((e) => console.error("❌ Jamg'arma xabari:", e.message));
+  /** Tarmoq uzilishida xabar yo'qolmasin: 3 marta, 3 va 10 soniya oraliq bilan */
+  async function sendWithRetry(chatId, text, delays = [3000, 10000]) {
+    for (let i = 0; ; i++) {
+      try {
+        return await telegram(chatId, text);
+      } catch (e) {
+        if (i >= delays.length) throw e;
+        console.error(`⚠️ Jamg'arma xabari (${i + 1}-urinish): ${e.message}`);
+        await new Promise((r) => setTimeout(r, delays[i]));
+      }
+    }
+  }
+  const alertOwner = (text) =>
+    sendWithRetry(OWNER_ID, text).catch((e) => console.error("❌ Jamg'arma xabari (3 urinishdan keyin):", e.message));
 
   async function ensureTables() {
     await pool.query(`
@@ -159,9 +175,11 @@ export function createSavingsCard({
   async function totals(client, startedAt) {
     const [t, c] = await Promise.all([
       client.query(`SELECT COALESCE(SUM(target), 0)::bigint AS s FROM savings_checkpoints`),
+      // Kartaga tushgan HAR QANDAY pul hisoblanadi: buyurtmaga mos kelmagan to'lov ham (mijoz summani
+      // noto'g'ri yozgan va h.k.) baribir jamg'arma kartasida turibdi
       client.query(
         `SELECT COALESCE(SUM(amount), 0)::bigint AS s FROM sms_payments
-         WHERE decision = 'matched' AND card_last4 = $1 AND received_at >= $2`,
+         WHERE card_last4 = $1 AND received_at >= $2`,
         [savingsLast4, startedAt]
       ),
     ]);
