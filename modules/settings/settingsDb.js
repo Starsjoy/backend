@@ -17,6 +17,8 @@ export const SETTING_KEYS = {
   USERBOT_AUTO_REFILL: "userbot_auto_refill_enabled",
   /** Mijozga qaysi karta ko'rsatiladi: uzcard1 | uzcard2 | uzcard3 | humo1 */
   PAYMENT_SYSTEM: "payment_system",
+  /** Balans muammosi: mijozga "buyurtma 12 soatgacha kechikishi mumkin" ogohlantirishi */
+  DELAY_NOTICE: "delay_notice",
 };
 
 const DEFAULTS = {
@@ -25,6 +27,7 @@ const DEFAULTS = {
   [SETTING_KEYS.FRAGMENT_PAYMENT_METHOD]: "ton",
   [SETTING_KEYS.USERBOT_AUTO_REFILL]: "true",
   [SETTING_KEYS.PAYMENT_SYSTEM]: "uzcard1",
+  [SETTING_KEYS.DELAY_NOTICE]: "false",
 };
 
 /** Eski `tokens` jadvalidan bir martalik ko'chirish */
@@ -126,6 +129,7 @@ export async function loadSettings(pool, force = false) {
       true
     ),
     payment_system: normalizeCardSlot(map[SETTING_KEYS.PAYMENT_SYSTEM]),
+    delay_notice: parseBoolSetting(map[SETTING_KEYS.DELAY_NOTICE], false),
   };
 
   // paymentSystem moduli aktiv kartani runtime'da saqlaydi — DB bilan sinxron
@@ -148,6 +152,7 @@ export function toPublicAppConfig(settings) {
   }
   return {
     maintenance: Boolean(settings.maintenance),
+    delay_notice: Boolean(settings.delay_notice),
     stars_purchase_mode: mode,
     stars_purchase_path: starsPath,
     premium_purchase_path: premiumPath,
@@ -178,6 +183,11 @@ export async function setStarsPurchaseMode(pool, mode) {
 export async function setFragmentPaymentMethod(pool, method) {
   const pm = normalizeFragmentPaymentMethod(method);
   await setSetting(pool, SETTING_KEYS.FRAGMENT_PAYMENT_METHOD, pm);
+  return loadSettings(pool, true);
+}
+
+export async function setDelayNotice(pool, enabled) {
+  await setSetting(pool, SETTING_KEYS.DELAY_NOTICE, enabled ? "true" : "false");
   return loadSettings(pool, true);
 }
 

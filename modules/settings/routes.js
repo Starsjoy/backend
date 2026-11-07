@@ -3,6 +3,7 @@ import { listCards } from "../paymentSystem/index.js";
 import {
   getPublicAppConfig,
   setMaintenance,
+  setDelayNotice,
   setStarsPurchaseMode,
   setFragmentPaymentMethod,
   setPaymentSystem,
@@ -57,6 +58,21 @@ export function registerSettingsRoutes(app, ctx) {
       res.json({ success: true, ...toPublicAppConfig(settings) });
     } catch (err) {
       console.error("❌ /api/admin/maintenance:", err.message);
+      res.status(500).json({ error: "Server xatosi" });
+    }
+  });
+
+  app.post("/api/admin/delay-notice", adminAuth, async (req, res) => {
+    try {
+      const { enabled } = req.body;
+      if (typeof enabled !== "boolean") {
+        return res.status(400).json({ error: "enabled (true/false) kerak" });
+      }
+      const settings = await setDelayNotice(pool, enabled);
+      console.log(`⏳ Kechikish ogohlantirishi: ${enabled ? "YOQILDI" : "O'CHIRILDI"}`);
+      res.json({ success: true, ...toPublicAppConfig(settings) });
+    } catch (err) {
+      console.error("❌ /api/admin/delay-notice:", err.message);
       res.status(500).json({ error: "Server xatosi" });
     }
   });
