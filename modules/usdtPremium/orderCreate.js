@@ -105,7 +105,7 @@ export async function createUsdtPremiumOrder(req, res, ctx) {
       `SELECT DISTINCT summ FROM orders 
        WHERE order_type IN ('gift', 'premium', 'premium_usdt', 'stars', 'stars_usdt') 
        AND payment_status IS DISTINCT FROM 'paid'
-       AND created_at >= NOW() - INTERVAL '20 minutes'`
+       AND created_at >= NOW() - INTERVAL '10 minutes'`
     );
     const conflictSet = new Set(conflictPrices.rows.map((r) => r.summ));
 

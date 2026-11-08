@@ -34,7 +34,7 @@ export async function getPaymeePremiumPrice(req, res, ctx) {
       `SELECT DISTINCT summ FROM orders 
        WHERE order_type IN ('gift', 'premium', 'premium_usdt', 'premium_paymee', 'stars', 'stars_usdt', 'stars_paymee') 
        AND payment_status IS DISTINCT FROM 'paid'
-       AND created_at >= NOW() - INTERVAL '20 minutes'`
+       AND created_at >= NOW() - INTERVAL '10 minutes'`
     );
     conflictPrices = new Set(rows.rows.map((r) => r.summ));
   } catch (err) {

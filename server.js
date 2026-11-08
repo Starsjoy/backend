@@ -5868,12 +5868,12 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
       }
     }
     
-    // 🛡️ To'lanmagan orderning summasi 20 daqiqa boshqa mijozga berilmaydi:
+    // 🛡️ To'lanmagan orderning summasi 10 daqiqa boshqa mijozga berilmaydi:
     // muddati o'tgan order egasi kechikib to'lasa, pul yangi orderga yozilmasin.
     const giftConflict = await pool.query(
       `SELECT DISTINCT summ FROM orders
        WHERE payment_status IS DISTINCT FROM 'paid'
-       AND created_at >= NOW() - INTERVAL '20 minutes'`
+       AND created_at >= NOW() - INTERVAL '10 minutes'`
     );
     const giftConflictSet = new Set(giftConflict.rows.map((r) => Number(r.summ)));
 
