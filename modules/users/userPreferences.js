@@ -1,3 +1,5 @@
+import { BLOCKED_REFERRER_IDS } from "./referralLink.js";
+
 const VALID_LANGUAGES = ["uz", "en", "ru"];
 
 export function normalizeLanguage(code) {
@@ -69,7 +71,7 @@ export async function getUserPreferences(pool, userId) {
   }
 
   const r = await pool.query(
-    `SELECT language, language_selected, onboarding_completed, bonus_ad_shown
+    `SELECT language, language_selected, onboarding_completed, bonus_ad_shown, referrer_user_id
      FROM users WHERE user_id = $1`,
     [uid]
   );
@@ -90,6 +92,8 @@ export async function getUserPreferences(pool, userId) {
     language_selected: Boolean(row.language_selected),
     onboarding_completed: Boolean(row.onboarding_completed),
     bonus_ad_shown: Boolean(row.bonus_ad_shown),
+    // Soxta "tekin Stars" havolasi orqali kelgan — Mini App ogohlantirish ko'rsatadi
+    fake_ref_warning: BLOCKED_REFERRER_IDS.has(String(row.referrer_user_id || "")),
     exists: true,
   };
 }

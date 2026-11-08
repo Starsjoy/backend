@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { Telegraf, Markup } from 'telegraf';
 import pg from 'pg';
 import { upsertUserFromTelegram } from './modules/users/upsertUser.js';
-import { linkReferrerOnSignup, parseReferralPayload } from './modules/users/referralLink.js';
+import { linkReferrerOnSignup, parseReferralPayload, isBlockedReferralCode, FAKE_PROMO_WARNING } from './modules/users/referralLink.js';
 import { markUserSubscribed } from './modules/users/subscription.js';
 import { scheduleChannelInvite } from './modules/notifications/channelInvite.js';
 import { notifyReferralStart } from './modules/notifications/referralChannel.js';
@@ -149,6 +149,8 @@ bot.start(async (ctx) => {
   const username = ctx.from.username || `user_${userId}`; // Username bo'lmasa user_id ishlatiladi
   const language = ctx.from.language_code || 'uz';
   const startPayload = ctx.payload ?? ctx.startPayload;
+  // Bloklangan referal havola ("tekin Stars" deb tarqatilgan) bilan kelganmi
+  const blockedRef = isBlockedReferralCode(parseReferralPayload(startPayload));
 
   try {
     const { created, username: savedUsername } = await upsertUserFromTelegram(pool, {
@@ -206,6 +208,11 @@ bot.start(async (ctx) => {
     );
   }
 
+  // Soxta "tekin Stars" havolasi bilan kelgan — avval halol ogohlantirish (3 tilda)
+  if (blockedRef) {
+    await safeReply(ctx, FAKE_PROMO_WARNING);
+  }
+
   // Obuna MAJBURIY EMAS: hammaga darhol START
   await safeReply(ctx, getStartText(), getStartKeyboard());
 
@@ -216,7 +223,8 @@ bot.start(async (ctx) => {
     await markUserSubscribed(pool, userId).catch((err) =>
       console.error("❌ Obunani belgilashda xato:", err.message)
     );
-  } else {
+  } else if (!blockedRef) {
+    // Soxta havola bilan kelganlarga kanal taklifi yuborilmaydi (spam/scam shikoyati xavfi)
     await scheduleChannelInvite(pool, userId).catch((err) =>
       console.error("❌ Kanal taklifini rejalashtirishda xato:", err.message)
     );

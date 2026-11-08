@@ -43,7 +43,7 @@ import {
 } from "./modules/settings/index.js";
 import { upsertUserFromTelegram } from "./modules/users/upsertUser.js";
 import { notifyReferralStart } from "./modules/notifications/referralChannel.js";
-import { buildReferralLink } from "./modules/users/referralLink.js";
+import { isBlockedReferralCode, buildReferralLink } from "./modules/users/referralLink.js";
 import { markUserSubscribed } from "./modules/users/subscription.js";
 import { runChannelInviteJob } from "./modules/notifications/channelInvite.js";
 import {
@@ -4741,7 +4741,9 @@ app.get("/api/user/history/:userId", telegramAuth, async (req, res) => {
 // 1️⃣ Referral code bilan user ro'yxatdan o'tish yoki kirish
 app.post("/api/referral/register", authLimiter, telegramAuth, async (req, res) => {
   try {
-    const { username, referral_code, language, language_selected } = req.body;
+    const { username, language, language_selected } = req.body;
+    // Bloklangan referal havola ("tekin Stars") — referalsiz ro'yxatdan o'tkaziladi
+    const referral_code = isBlockedReferralCode(req.body.referral_code) ? null : req.body.referral_code;
     // Telegram ma'lumotlarini olish
     const tgUser = req.telegramUser;
     const tgUserId = tgUser?.id ? String(tgUser.id) : null;
