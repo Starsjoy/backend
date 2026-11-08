@@ -130,15 +130,16 @@ export async function createPaymeePremiumOrder(req, res, ctx) {
     const conflictPrices = await pool.query(
       `SELECT DISTINCT summ FROM orders 
        WHERE order_type IN ('gift', 'premium', 'premium_usdt', 'premium_paymee', 'stars', 'stars_usdt', 'stars_paymee') 
-       AND status = 'pending' AND payment_status = 'pending'
-       AND created_at >= NOW() - INTERVAL '8 minutes'`
+       AND payment_status IS DISTINCT FROM 'paid'
+       AND created_at >= NOW() - INTERVAL '20 minutes'`
     );
     const conflictSet = new Set(conflictPrices.rows.map((r) => r.summ));
 
     let priceSlotIndex = -1;
     let amount;
 
-    for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+    // 0-slot (yaxlit asosiy narx) berilmaydi: mijoz ko'rsatilgan summa o'rniga yaxlit narx tashlasa, pul o'sha narxdagi boshqa mijoz orderiga yozilib ketardi
+    for (let i = 1; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
       if (priceSlots[slotKey][i]) {
         const elapsed = Date.now() - priceSlots[slotKey][i].createdAt;
         if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) continue;

@@ -831,7 +831,8 @@ function getAvailablePriceSlot(starsAmount) {
   }
   
   // Find first available slot (0-indexed)
-  for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+  // 0-slot (yaxlit asosiy narx) berilmaydi: mijoz ko'rsatilgan summa o'rniga yaxlit narx tashlasa, pul o'sha narxdagi boshqa mijoz orderiga yozilib ketardi
+  for (let i = 1; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
     if (!slots[i]) {
       return i;
     }
@@ -986,7 +987,8 @@ function getAvailableDiscountPriceSlot(packageId) {
   }
   
   // Find first available slot (0-indexed)
-  for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+  // 0-slot (yaxlit asosiy narx) berilmaydi: mijoz ko'rsatilgan summa o'rniga yaxlit narx tashlasa, pul o'sha narxdagi boshqa mijoz orderiga yozilib ketardi
+  for (let i = 1; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
     if (!slots[i]) {
       return i;
     }
@@ -1135,7 +1137,8 @@ function getAvailablePremiumPriceSlot(months) {
   }
   
   // Find first available slot (0-indexed)
-  for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+  // 0-slot (yaxlit asosiy narx) berilmaydi: mijoz ko'rsatilgan summa o'rniga yaxlit narx tashlasa, pul o'sha narxdagi boshqa mijoz orderiga yozilib ketardi
+  for (let i = 1; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
     if (!slots[i]) {
       return i;
     }
@@ -1252,7 +1255,8 @@ function getAvailableGiftPriceSlot(giftStars) {
   }
   
   // Find first available slot (0-indexed)
-  for (let i = 0; i < GIFT_SLOT_CONFIG.MAX_SLOTS; i++) {
+  // 0-slot (yaxlit asosiy narx) berilmaydi: mijoz ko'rsatilgan summa o'rniga yaxlit narx tashlasa, pul o'sha narxdagi boshqa mijoz orderiga yozilib ketardi
+  for (let i = 1; i < GIFT_SLOT_CONFIG.MAX_SLOTS; i++) {
     if (!slots[i]) {
       return i;
     }
@@ -2381,7 +2385,8 @@ app.get("/api/stars/price/:stars", async (req, res) => {
   if (!priceSlots[key]) priceSlots[key] = {};
 
   let slotIndex = -1;
-  for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+  // 0-slot (yaxlit asosiy narx) berilmaydi: mijoz ko'rsatilgan summa o'rniga yaxlit narx tashlasa, pul o'sha narxdagi boshqa mijoz orderiga yozilib ketardi
+  for (let i = 1; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
     if (priceSlots[key][i]) {
       const elapsed = Date.now() - priceSlots[key][i].createdAt;
       if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) continue;
@@ -2809,7 +2814,8 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
         
         // 🛡️ Slot tizimi - har bir chegirma paketi uchun alohida 20 ta slot
         
-        for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+        // 0-slot (yaxlit asosiy narx) berilmaydi: mijoz ko'rsatilgan summa o'rniga yaxlit narx tashlasa, pul o'sha narxdagi boshqa mijoz orderiga yozilib ketardi
+        for (let i = 1; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
           // Slot band bo'lsa, keyingisiga o'tish
           if (discountPriceSlots[discountPackage.id] && discountPriceSlots[discountPackage.id][i]) {
             const elapsed = Date.now() - discountPriceSlots[discountPackage.id][i].createdAt;
@@ -2861,7 +2867,8 @@ app.post("/api/order", orderLimiter, telegramAuth, async (req, res) => {
 
       const conflictPrices = await fetchPendingConflictPrices();
 
-      for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+      // 0-slot (yaxlit asosiy narx) berilmaydi: mijoz ko'rsatilgan summa o'rniga yaxlit narx tashlasa, pul o'sha narxdagi boshqa mijoz orderiga yozilib ketardi
+      for (let i = 1; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
         if (priceSlots[String(starsNum)][i]) {
           const elapsed = Date.now() - priceSlots[String(starsNum)][i].createdAt;
           if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
@@ -3572,7 +3579,8 @@ app.post("/api/premium", orderLimiter, telegramAuth, async (req, res) => {
     }
     
     // Bo'sh slot topish
-    for (let i = 0; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
+    // 0-slot (yaxlit asosiy narx) berilmaydi: mijoz ko'rsatilgan summa o'rniga yaxlit narx tashlasa, pul o'sha narxdagi boshqa mijoz orderiga yozilib ketardi
+    for (let i = 1; i < PRICE_SLOT_CONFIG.MAX_SLOTS; i++) {
       if (premiumPriceSlots[months] && premiumPriceSlots[months][i]) {
         const elapsed = Date.now() - premiumPriceSlots[months][i].createdAt;
         if (elapsed <= PRICE_SLOT_CONFIG.SLOT_TIMEOUT) {
@@ -5860,8 +5868,18 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
       }
     }
     
+    // 🛡️ To'lanmagan orderning summasi 20 daqiqa boshqa mijozga berilmaydi:
+    // muddati o'tgan order egasi kechikib to'lasa, pul yangi orderga yozilmasin.
+    const giftConflict = await pool.query(
+      `SELECT DISTINCT summ FROM orders
+       WHERE payment_status IS DISTINCT FROM 'paid'
+       AND created_at >= NOW() - INTERVAL '20 minutes'`
+    );
+    const giftConflictSet = new Set(giftConflict.rows.map((r) => Number(r.summ)));
+
     // Bo'sh slot topish
-    for (let i = 0; i < GIFT_SLOT_CONFIG.MAX_SLOTS; i++) {
+    // 0-slot (yaxlit asosiy narx) berilmaydi: mijoz ko'rsatilgan summa o'rniga yaxlit narx tashlasa, pul o'sha narxdagi boshqa mijoz orderiga yozilib ketardi
+    for (let i = 1; i < GIFT_SLOT_CONFIG.MAX_SLOTS; i++) {
       if (giftPriceSlots[serverStars] && giftPriceSlots[serverStars][i]) {
         const elapsed = Date.now() - giftPriceSlots[serverStars][i].createdAt;
         if (elapsed <= GIFT_SLOT_CONFIG.SLOT_TIMEOUT) {
@@ -5871,9 +5889,12 @@ app.post("/api/gift/order", orderLimiter, telegramAuth, async (req, res) => {
         delete giftPriceSlots[serverStars][i];
       }
       
+      const giftCandidate = calculateGiftSlotPrice(serverStars, i);
+      if (giftConflictSet.has(Number(giftCandidate))) continue; // summa yaqinda boshqa orderda
+
       // Bo'sh slot topildi
       priceSlotIndex = i;
-      slotBasedPrice = calculateGiftSlotPrice(serverStars, i);
+      slotBasedPrice = giftCandidate;
       break;
     }
     
