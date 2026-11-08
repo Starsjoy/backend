@@ -6,6 +6,7 @@ import { linkReferrerOnSignup, parseReferralPayload, isBlockedReferralCode, FAKE
 import { markUserSubscribed } from './modules/users/subscription.js';
 import { scheduleChannelInvite } from './modules/notifications/channelInvite.js';
 import { notifyReferralStart } from './modules/notifications/referralChannel.js';
+import { maybeSendDebtNotice } from './modules/notifications/debtNotice.js';
 import { handleSourceStart } from './modules/sources/index.js';
 const { Pool } = pg;
 
@@ -215,6 +216,9 @@ bot.start(async (ctx) => {
 
   // Obuna MAJBURIY EMAS: hammaga darhol START
   await safeReply(ctx, getStartText(), getStartKeyboard());
+
+  // Kutib turgan qarz eslatmasi (faqat ro'yxatdagi userlar, bir marta)
+  maybeSendDebtNotice(pool, bot, userId).catch(() => {});
 
   // Kanalda bo'lsa — belgilaymiz (missiya/referal hisobi); bo'lmasa — ixtiyoriy taklif
   // 1 soatdan keyin, userning tilida (server.js dagi navbat job'i yuboradi)
@@ -575,6 +579,10 @@ bot.on('my_chat_member', (ctx, next) => {
   const chat = ctx.myChatMember?.chat;
   const status = ctx.myChatMember?.new_chat_member?.status;
   if (chat) console.log(`📌 Bot holati o'zgardi: "${chat.title || chat.username || ''}" id=${chat.id} type=${chat.type} status=${status}`);
+  // Botni blokdan chiqargan bo'lsa — kutib turgan qarz eslatmasi (faqat ro'yxatdagi userlar)
+  if (chat?.type === "private" && status === "member") {
+    maybeSendDebtNotice(pool, bot, chat.id).catch(() => {});
+  }
   return next();
 });
 
