@@ -42,6 +42,7 @@ import {
   registerSettingsRoutes,
 } from "./modules/settings/index.js";
 import { upsertUserFromTelegram } from "./modules/users/upsertUser.js";
+import { logIdentity } from "./modules/users/identityLog.js";
 import { notifyReferralStart } from "./modules/notifications/referralChannel.js";
 import { isBlockedReferralCode, buildReferralLink } from "./modules/users/referralLink.js";
 import { markUserSubscribed } from "./modules/users/subscription.js";
@@ -319,6 +320,7 @@ function telegramAuth(req, res, next) {
   }
   
   req.telegramUser = user;
+  logIdentity(pool, user); // username/ism tarixi (fire-and-forget)
   next();
 }
 // ======================
