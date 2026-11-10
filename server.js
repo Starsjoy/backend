@@ -43,6 +43,7 @@ import {
 } from "./modules/settings/index.js";
 import { upsertUserFromTelegram } from "./modules/users/upsertUser.js";
 import { logIdentity } from "./modules/users/identityLog.js";
+import { registerPremiumWait } from "./modules/premiumWait/index.js";
 import { notifyReferralStart } from "./modules/notifications/referralChannel.js";
 import { isBlockedReferralCode, buildReferralLink } from "./modules/users/referralLink.js";
 import { markUserSubscribed } from "./modules/users/subscription.js";
@@ -3968,6 +3969,9 @@ app.get("/api/premium/transactions/:id", telegramAuth, async (req, res) => {
 // Admin Warning: yetkazilmagan buyurtmalar va qotib qolgan processing
 const WARNING_ORDER_TYPES = `('stars', 'stars_usdt', 'stars_paymee', 'premium', 'premium_usdt', 'premium_paymee', 'gift')`;
 const WARNING_STUCK_SQL = `(o.status = 'processing' AND o.created_at < NOW() - INTERVAL '10 minutes')`;
+
+// Kutilayotgan Premium (mijoz Premium'i hali aktiv — tugash kuni egasiga eslatma)
+registerPremiumWait(app, { pool, adminAuth, projectName: "StarsJoy" });
 
 app.get("/api/admin/warnings", adminAuth, async (req, res) => {
   try {
