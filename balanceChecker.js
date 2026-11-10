@@ -96,6 +96,10 @@ async function initCardLimitGuard(pool) {
         listUzcards: () => listCards()
             .filter((c) => c.brand === 'uzcard' && c.payable && c.configured)
             .map((c) => ({ slot: c.slot, last4: c.suffix })),
+        getHumo: () => {
+            const h = listCards().find((c) => c.brand === 'humo' && c.payable && c.configured);
+            return h ? { slot: h.slot, last4: h.suffix } : null;
+        },
         fallbackSlot: () => 'uzcard1',
         normalizeSlot: (s) => (s ? normalizeCardSlot(s) : null),
     });
