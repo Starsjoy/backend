@@ -103,7 +103,7 @@ export function registerBotRelay(bot, { pool, botName, isBusy = () => false, adm
     }
 
     // ---- Mijoz: buyruq bo'lmagan xabar → egasiga ----
-    if (adminIds.includes(from.id)) return next();
+    // Adminlar ham relay qilinadi (masalan @StarsjoySupport mijozdek javob yozsa); broadcast kabi jarayon isBusy orqali o'tadi
     if (text.startsWith("/")) return next();
     if (!RELAY_TYPES.some((t) => msg[t])) return next();
 
