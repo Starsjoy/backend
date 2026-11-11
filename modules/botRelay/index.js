@@ -133,10 +133,7 @@ export function registerBotRelay(bot, { pool, botName, isBusy = () => false, adm
           await record(cp.message_id, from.id, "in");
         }
       }
-      if (!n_ack) {
-        await ctx.reply(ackText(from.language_code)).catch(() => {});
-        await record(null, from.id, "ack");
-      }
+      // Avtomatik "qabul qilindi" javobi o'chirilgan (egasi qarori, 2026-11-11)
     } catch (e) {
       console.error("❌ bot relay (mijoz → egasi):", e.message);
     }
