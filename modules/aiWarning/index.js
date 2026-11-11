@@ -49,6 +49,9 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )`
     )
+    // Balans usuli: SMS kelmagan, to'lov karta qoldig'i farqi bilan isbotlangan (sms_id bo'sh)
+    .then(() => pool.query(`ALTER TABLE ai_payment_warnings ALTER COLUMN sms_id DROP NOT NULL`))
+    .then(() => pool.query(`ALTER TABLE ai_payment_warnings ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'sms'`))
     .catch((e) => console.error("❌ ai_payment_warnings jadval:", e.message));
 
   function keyOk(req) {
@@ -68,15 +71,49 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
     return false;
   }
 
+  /** SMS'siz, karta qoldig'i farqi bilan isbotlangan to'lov. Farq 0 ham bo'lishi mumkin (sabab: SMS kelmagan). */
+  async function addByBalance(o, bal, note, res) {
+    const card = String(bal.card || "").replace(/\D/g, "").slice(-4);
+    const amount = Math.round(Number(bal.amount));
+    const at = new Date(bal.paid_at);
+    const proof = String(bal.proof || "").slice(0, 400);
+    if (!/^\d{4}$/.test(card)) throw new Error("balance.card noto'g'ri");
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error("balance.amount noto'g'ri");
+    if (Number.isNaN(at.getTime())) throw new Error("balance.paid_at noto'g'ri");
+    if (!proof) throw new Error("balance.proof (qoldiqlar hisobi) kerak");
+    const known = await ledger.query(`SELECT 1 FROM sms_payments WHERE card_last4 = $1 LIMIT 1`, [card]);
+    if (!known.rows.length) throw new Error("karta bizniki emas");
+    const summ = Number(o.summ);
+    const diff = amount - summ;
+    if (Math.abs(diff) > summ * MAX_DIFF_RATIO) throw new Error(`farq ${diff} so'm, 3% dan katta`);
+    const minutes = (at.getTime() - new Date(o.created_at).getTime()) / 60000;
+    if (minutes < -1 || minutes > WINDOW_MIN) throw new Error(`to'lov vaqti buyurtmaga mos emas (${Math.round(minutes)} daq)`);
+    const sms = await ledger.query(
+      `SELECT id FROM sms_payments WHERE card_last4 = $1 AND amount = $2
+         AND COALESCE(sms_time, received_at) BETWEEN $3::timestamptz - INTERVAL '10 minutes' AND $3::timestamptz + INTERVAL '10 minutes' LIMIT 1`,
+      [card, amount, at]
+    );
+    if (sms.rows.length) throw new Error(`bu summaga SMS bor (#${sms.rows[0].id}), sms_id bilan qo'shing`);
+    if (await amountTaken(amount, at)) throw new Error("bu summa shu paytda boshqa to'langan buyurtmaga ketgan");
+    const ins = await pool.query(
+      `INSERT INTO ai_payment_warnings (order_id, sms_id, sms_amount, order_summ, card_last4, sms_at, note, source)
+       VALUES ($1, NULL, $2, $3, $4, $5, $6, 'balance') ON CONFLICT DO NOTHING RETURNING id`,
+      [o.id, amount, summ, card, at, [proof, note].filter(Boolean).join(" | ")]
+    );
+    if (!ins.rows.length) throw new Error("bu buyurtma ro'yxatda allaqachon bor");
+    return res.json({ ok: true, id: ins.rows[0].id, diff, source: "balance" });
+  }
+
   app.post("/api/agent/ai-warning", async (req, res) => {
     if (!keyOk(req)) return res.status(404).json({ error: "Not found" });
     try {
       await ready;
       const orderId = Number(req.body?.order_id);
       const smsId = Number(req.body?.sms_id);
+      const bal = req.body?.balance || null; // { card, amount, paid_at, proof }
       const note = String(req.body?.note || "").slice(0, 300);
       if (!Number.isInteger(orderId) || orderId <= 0) throw new Error("order_id noto'g'ri");
-      if (!Number.isInteger(smsId) || smsId <= 0) throw new Error("sms_id noto'g'ri");
+      if (!bal && (!Number.isInteger(smsId) || smsId <= 0)) throw new Error("sms_id noto'g'ri");
 
       const o = (
         await pool.query(
@@ -87,6 +124,8 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
       ).rows[0];
       if (!o) throw new Error("buyurtma topilmadi (yoki 3 kundan eski)");
       if (o.payment_status === "paid") throw new Error("buyurtma allaqachon to'langan");
+
+      if (bal) return await addByBalance(o, bal, note, res);
 
       const s = (
         await ledger.query(
@@ -127,7 +166,7 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
       await ready;
       const r = await pool.query(
         `SELECT w.id, w.order_id, w.sms_id, w.sms_amount, w.order_summ, w.sms_amount - w.order_summ AS diff,
-                w.card_last4, w.sms_at, w.note, w.created_at AS added_at,
+                w.card_last4, w.sms_at, w.note, w.source, w.created_at AS added_at,
                 o.order_type, o.type_amount, o.recipient_username, o.payment_status, o.status, o.created_at,
                 o.owner_user_id, u.username AS owner_username
            FROM ai_payment_warnings w
