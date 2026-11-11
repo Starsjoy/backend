@@ -45,6 +45,7 @@ import { upsertUserFromTelegram } from "./modules/users/upsertUser.js";
 import { logIdentity } from "./modules/users/identityLog.js";
 import { registerPremiumWait } from "./modules/premiumWait/index.js";
 import { registerBotDraftApi } from "./modules/botRelay/index.js";
+import { registerAiWarning } from "./modules/aiWarning/index.js";
 import { notifyReferralStart } from "./modules/notifications/referralChannel.js";
 import { isBlockedReferralCode, buildReferralLink } from "./modules/users/referralLink.js";
 import { markUserSubscribed } from "./modules/users/subscription.js";
@@ -3974,6 +3975,7 @@ const WARNING_STUCK_SQL = `(o.status = 'processing' AND o.created_at < NOW() - I
 // Kutilayotgan Premium (mijoz Premium'i hali aktiv — tugash kuni egasiga eslatma)
 registerPremiumWait(app, { pool, adminAuth, projectName: "StarsJoy" });
 registerBotDraftApi(app, { pool, botName: "@StarsjoyBot" });
+registerAiWarning(app, { pool, adminAuth, peerEnvFiles: String(process.env.PAYMENT_PEER_ENV_FILES || "").split(",").map((f) => f.trim()).filter(Boolean) });
 
 app.get("/api/admin/warnings", adminAuth, async (req, res) => {
   try {
