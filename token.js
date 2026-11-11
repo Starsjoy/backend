@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { Telegraf, Markup } from 'telegraf';
 import pg from 'pg';
+import { registerBotRelay } from './modules/botRelay/index.js';
 import { upsertUserFromTelegram } from './modules/users/upsertUser.js';
 import { linkReferrerOnSignup, parseReferralPayload, isBlockedReferralCode, FAKE_PROMO_WARNING } from './modules/users/referralLink.js';
 import { markUserSubscribed } from './modules/users/subscription.js';
@@ -491,6 +492,9 @@ bot.action('broadcast_reject', async (ctx) => {
   await ctx.answerCbQuery('❌ Bekor qilindi');
   await ctx.deleteMessage();
 });
+
+// Mijoz ↔ egasi relay va agent qoralamalari tasdig'i (broadcast handler'laridan OLDIN)
+registerBotRelay(bot, { pool, botName: '@StarsjoyBot', adminIds: ADMIN_IDS, isBusy: (id) => Boolean(broadcastState.get(id)?.waiting) });
 
 // Admin xabar yozganda (matn)
 bot.on('text', async (ctx) => {
