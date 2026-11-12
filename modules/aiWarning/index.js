@@ -117,13 +117,21 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
 
       const o = (
         await pool.query(
-          `SELECT id, summ, payment_status, created_at FROM orders
+          `SELECT id, summ, payment_status, created_at, owner_user_id, order_type, type_amount FROM orders
             WHERE id = $1 AND created_at > NOW() - INTERVAL '3 days'`,
           [orderId]
         )
       ).rows[0];
       if (!o) throw new Error("buyurtma topilmadi (yoki 3 kundan eski)");
       if (o.payment_status === "paid") throw new Error("buyurtma allaqachon to'langan");
+      // Mijoz shu mahsulotni keyin boshqa buyurtma bilan olgan bo'lsa — qo'shilmaydi (ikki marta yuborilmasin)
+      const got = await pool.query(
+        `SELECT id FROM orders WHERE owner_user_id::text = $1::text AND id <> $2 AND payment_status = 'paid'
+           AND order_type = $3 AND type_amount::text = $4::text
+           AND created_at BETWEEN $5::timestamptz - INTERVAL '1 hour' AND $5::timestamptz + INTERVAL '1 hour' LIMIT 1`,
+        [o.owner_user_id, o.id, o.order_type, String(o.type_amount), o.created_at]
+      );
+      if (got.rows.length) throw new Error(`mijozga shu mahsulot #${got.rows[0].id} bilan yetkazilgan`);
 
       if (bal) return await addByBalance(o, bal, note, res);
 
