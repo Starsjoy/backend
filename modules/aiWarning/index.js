@@ -139,7 +139,7 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
       const summ = Number(o.summ);
       const amount = Number(s.amount);
       const diff = amount - summ;
-      if (diff === 0) throw new Error("summa aniq teng, farq yo'q");
+      // Aniq teng summa ham qabul qilinadi (masalan mijoz yangi buyurtma ochib, eskisi eskirgan)
       if (diff < 0 && -diff > summ * MAX_DIFF_RATIO) throw new Error(`${-diff} so'm kam to'langan, 3% dan ko'p`); // ortiqcha to'lov istalgan miqdorda
 
       const at = new Date(s.at);
