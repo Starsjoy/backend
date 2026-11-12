@@ -161,6 +161,26 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
     }
   });
 
+  // Agent: mijoz keyin username/sovg'a/mahsulotni almashtirsa — qatorni ro'yxatdan oladi (buyurtmaga tegmaydi)
+  app.post("/api/agent/ai-warning/remove", async (req, res) => {
+    if (!keyOk(req)) return res.status(404).json({ error: "Not found" });
+    try {
+      await ready;
+      const orderId = Number(req.body?.order_id);
+      if (!Number.isInteger(orderId) || orderId <= 0) throw new Error("order_id noto'g'ri");
+      const reason = String(req.body?.reason || "").slice(0, 200);
+      const r = await pool.query(
+        `UPDATE ai_payment_warnings SET status = 'dismissed', note = COALESCE(note, '') || $2
+          WHERE order_id = $1 AND status = 'open' RETURNING id`,
+        [orderId, reason ? ` | olib tashlandi: ${reason}` : " | olib tashlandi"]
+      );
+      if (!r.rows.length) throw new Error("bu buyurtma ro'yxatda yo'q");
+      res.json({ ok: true, id: r.rows[0].id });
+    } catch (e) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
   app.get("/api/admin/ai-warnings", adminAuth, async (req, res) => {
     try {
       await ready;
