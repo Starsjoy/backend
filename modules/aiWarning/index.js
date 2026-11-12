@@ -85,7 +85,7 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
     if (!known.rows.length) throw new Error("karta bizniki emas");
     const summ = Number(o.summ);
     const diff = amount - summ;
-    if (Math.abs(diff) > summ * MAX_DIFF_RATIO) throw new Error(`farq ${diff} so'm, 3% dan katta`);
+    if (diff < 0 && -diff > summ * MAX_DIFF_RATIO) throw new Error(`${-diff} so'm kam to'langan, 3% dan ko'p`); // ortiqcha to'lov istalgan miqdorda
     const minutes = (at.getTime() - new Date(o.created_at).getTime()) / 60000;
     if (minutes < -1 || minutes > WINDOW_MIN) throw new Error(`to'lov vaqti buyurtmaga mos emas (${Math.round(minutes)} daq)`);
     const sms = await ledger.query(
@@ -140,7 +140,7 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
       const amount = Number(s.amount);
       const diff = amount - summ;
       if (diff === 0) throw new Error("summa aniq teng, farq yo'q");
-      if (Math.abs(diff) > summ * MAX_DIFF_RATIO) throw new Error(`farq ${diff} so'm, 3% dan katta`);
+      if (diff < 0 && -diff > summ * MAX_DIFF_RATIO) throw new Error(`${-diff} so'm kam to'langan, 3% dan ko'p`); // ortiqcha to'lov istalgan miqdorda
 
       const at = new Date(s.at);
       const minutes = (at.getTime() - new Date(o.created_at).getTime()) / 60000;
