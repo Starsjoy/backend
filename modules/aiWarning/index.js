@@ -126,7 +126,7 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
       if (o.payment_status === "paid") throw new Error("buyurtma allaqachon to'langan");
       // Mijoz shu mahsulotni keyin boshqa buyurtma bilan olgan bo'lsa — qo'shilmaydi (ikki marta yuborilmasin)
       const got = await pool.query(
-        `SELECT id FROM orders WHERE owner_user_id::text = $1::text AND id <> $2 AND payment_status = 'paid'
+        `SELECT id FROM orders WHERE owner_user_id::text = $1::text AND id <> $2 AND status IN ('completed', 'delivered')
            AND order_type = $3 AND type_amount::text = $4::text
            AND created_at BETWEEN $5::timestamptz - INTERVAL '1 hour' AND $5::timestamptz + INTERVAL '1 hour' LIMIT 1`,
         [o.owner_user_id, o.id, o.order_type, String(o.type_amount), o.created_at]
@@ -142,7 +142,21 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
         )
       ).rows[0];
       if (!s) throw new Error("SMS daftarda yo'q");
-      if (s.order_id) throw new Error("SMS boshqa buyurtmaga bog'langan");
+
+      // Ko'chirish: to'lov shu mijozning yetkazilmagan eski buyurtmasida turibdi (masalan username noto'g'ri edi),
+      // mijoz to'g'ri ma'lumot bilan xuddi shu mahsulotga yangi buyurtma ochgan
+      const old = (
+        await pool.query(
+          `SELECT id, summ, created_at FROM orders WHERE owner_user_id::text = $1::text AND id <> $2
+             AND payment_status = 'paid' AND status NOT IN ('completed', 'delivered')
+             AND order_type = $3 AND type_amount::text = $4::text
+             AND created_at BETWEEN $5::timestamptz - INTERVAL '6 hours' AND $5::timestamptz
+             AND (id = $6 OR ($6 IS NULL AND summ = $7))
+           ORDER BY id DESC LIMIT 1`,
+          [o.owner_user_id, o.id, o.order_type, String(o.type_amount), o.created_at, s.order_id ? Number(s.order_id) : null, Number(s.amount)]
+        )
+      ).rows[0];
+      if (s.order_id && !old) throw new Error("SMS boshqa buyurtmaga bog'langan");
 
       const summ = Number(o.summ);
       const amount = Number(s.amount);
@@ -151,19 +165,22 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
       if (diff < 0 && -diff > summ * MAX_DIFF_RATIO) throw new Error(`${-diff} so'm kam to'langan, 3% dan ko'p`); // ortiqcha to'lov istalgan miqdorda
 
       const at = new Date(s.at);
-      const minutes = (at.getTime() - new Date(o.created_at).getTime()) / 60000;
+      const base = old ? new Date(old.created_at) : new Date(o.created_at); // ko'chirishda vaqt eski buyurtmaga nisbatan
+      const minutes = (at.getTime() - base.getTime()) / 60000;
       if (minutes < -1 || minutes > WINDOW_MIN) throw new Error(`SMS vaqti buyurtmaga mos emas (${Math.round(minutes)} daq)`);
 
-      if (await amountTaken(amount, at)) throw new Error("bu summa shu paytda boshqa to'langan buyurtmaga ketgan");
+      if (!old && (await amountTaken(amount, at))) throw new Error("bu summa shu paytda boshqa to'langan buyurtmaga ketgan");
 
       const ins = await pool.query(
-        `INSERT INTO ai_payment_warnings (order_id, sms_id, sms_amount, order_summ, card_last4, sms_at, note)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO ai_payment_warnings (order_id, sms_id, sms_amount, order_summ, card_last4, sms_at, note, source)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT DO NOTHING RETURNING id`,
-        [orderId, smsId, amount, summ, s.card_last4, at, note || null]
+        [orderId, smsId, amount, summ, s.card_last4, at,
+         [old ? `↪️ eski #${old.id} to'lovi (u yetkazilmagan)` : "", note].filter(Boolean).join(" | ") || null,
+         old ? "transfer" : "sms"]
       );
       if (!ins.rows.length) throw new Error("bu buyurtma yoki SMS ro'yxatda allaqachon bor");
-      res.json({ ok: true, id: ins.rows[0].id, diff });
+      res.json({ ok: true, id: ins.rows[0].id, diff, transfer_from: old ? old.id : null });
     } catch (e) {
       res.status(400).json({ error: e.message });
     }
