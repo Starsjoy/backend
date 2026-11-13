@@ -50,6 +50,7 @@ function parseBody(b, partial = false) {
   if (b.due_date !== undefined) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.due_date)) || isNaN(Date.parse(b.due_date))) throw new Error("due_date YYYY-MM-DD");
     out.due_date = String(b.due_date);
+    if (out.due_date < tashkentToday()) throw new Error("due_date o'tib ketgan sana, faqat bugun yoki keyingi kunlar");
   } else if (!partial) throw new Error("due_date kerak");
   if (b.note !== undefined) out.note = String(b.note || "").slice(0, 500);
   if (b.status !== undefined) {
