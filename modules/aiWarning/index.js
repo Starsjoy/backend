@@ -209,6 +209,19 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
     }
   });
 
+  // Yuborish tugmasi uchun: buyurtmaning haqiqiy holati (to'langan bo'lishi yetkazilgani degani emas)
+  app.get("/api/admin/ai-warnings/order/:orderId", adminAuth, async (req, res) => {
+    try {
+      const r = await pool.query(`SELECT payment_status, status FROM orders WHERE id = $1`, [Number(req.params.orderId)]);
+      if (!r.rows.length) return res.status(404).json({ success: false, error: "topilmadi" });
+      const st = r.rows[0].status;
+      const state = ["completed", "delivered"].includes(st) ? "sent" : ["failed", "error", "expired", "cancelled"].includes(st) && r.rows[0].payment_status === "paid" ? "failed" : "pending";
+      res.json({ success: true, state, status: st, payment_status: r.rows[0].payment_status });
+    } catch (e) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
   app.post("/api/admin/ai-warnings/:id/dismiss", adminAuth, async (req, res) => {
     try {
       const r = await pool.query(`UPDATE ai_payment_warnings SET status = 'dismissed' WHERE id = $1 RETURNING id`, [
