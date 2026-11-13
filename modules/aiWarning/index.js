@@ -71,6 +71,19 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
     return false;
   }
 
+  /** Shu SMS boshqa loyihaning AI Warning ro'yxatida ishlatilganmi (bitta to'lov ikki mijozga ketmasin) */
+  async function smsUsedElsewhere(smsId) {
+    for (const db of peers) {
+      try {
+        const r = await db.query(`SELECT order_id FROM ai_payment_warnings WHERE sms_id = $1 LIMIT 1`, [smsId]);
+        if (r.rows.length) return r.rows[0].order_id;
+      } catch {
+        /* peer'da jadval bo'lmasligi mumkin */
+      }
+    }
+    return null;
+  }
+
   /** SMS'siz, karta qoldig'i farqi bilan isbotlangan to'lov. Farq 0 ham bo'lishi mumkin (sabab: SMS kelmagan). */
   async function addByBalance(o, bal, note, res) {
     const card = String(bal.card || "").replace(/\D/g, "").slice(-4);
@@ -95,6 +108,18 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
     );
     if (sms.rows.length) throw new Error(`bu summaga SMS bor (#${sms.rows[0].id}), sms_id bilan qo'shing`);
     if (await amountTaken(amount, at)) throw new Error("bu summa shu paytda boshqa to'langan buyurtmaga ketgan");
+    for (const db of [pool, ...peers]) {
+      try {
+        const dup = await db.query(
+          `SELECT order_id FROM ai_payment_warnings WHERE source = 'balance' AND card_last4 = $1 AND sms_amount = $2
+             AND sms_at BETWEEN $3::timestamptz - INTERVAL '10 minutes' AND $3::timestamptz + INTERVAL '10 minutes' LIMIT 1`,
+          [card, amount, at]
+        );
+        if (dup.rows.length) throw new Error(`shu to'lov balans bilan #${dup.rows[0].order_id} ga allaqachon qo'shilgan`);
+      } catch (e) {
+        if (String(e.message).includes("allaqachon")) throw e;
+      }
+    }
     const ins = await pool.query(
       `INSERT INTO ai_payment_warnings (order_id, sms_id, sms_amount, order_summ, card_last4, sms_at, note, source)
        VALUES ($1, NULL, $2, $3, $4, $5, $6, 'balance') ON CONFLICT DO NOTHING RETURNING id`,
@@ -157,6 +182,8 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
         )
       ).rows[0];
       if (s.order_id && !old) throw new Error("SMS boshqa buyurtmaga bog'langan");
+      const elsewhere = await smsUsedElsewhere(smsId);
+      if (elsewhere) throw new Error(`bu SMS boshqa loyihada #${elsewhere} buyurtmaga ishlatilgan`);
 
       const summ = Number(o.summ);
       const amount = Number(s.amount);
