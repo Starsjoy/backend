@@ -11,7 +11,7 @@ import crypto from "crypto";
 
 const OWNER_ID = 6418750920; // @shavkatov_ff — relay va tasdiq faqat shu akkaunt
 const IN_LIMIT_PER_DAY = 20; // bitta mijozdan sutkada egasiga boradigan xabarlar
-const DRAFT_LIMIT_PER_DAY = 30;
+const DRAFT_LIMIT_PER_DAY = 80;
 const RELAY_TYPES = ["text", "photo", "voice", "video", "document", "audio", "video_note", "sticker", "animation"];
 
 const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
@@ -78,6 +78,10 @@ export function registerBotRelay(bot, { pool, botName, isBusy = () => false, adm
 
     // ---- Egasi: relay xabariga reply → mijozga ----
     if (from.id === OWNER_ID) {
+      if (text.trim().split("@")[0] === "/hammasi") {
+        await sendAllDrafts(ctx);
+        return;
+      }
       const rt = msg.reply_to_message;
       if (!rt || text.startsWith("/")) return next();
       const r = await pool
@@ -141,6 +145,43 @@ export function registerBotRelay(bot, { pool, botName, isBusy = () => false, adm
   });
 
   // ---- Agent qoralamasi: faqat egasi tasdiqlaydi ----
+  /** /hammasi — kutib turgan barcha qoralamalarni (oxirgi 24 soat) bittada yuboradi */
+  async function sendAllDrafts(ctx) {
+    const list = await pool.query(
+      "SELECT id FROM bot_drafts WHERE status = 'pending' AND created_at > NOW() - INTERVAL '24 hours' ORDER BY id"
+    );
+    if (!list.rows.length) return ctx.reply("Kutib turgan qoralama yo'q ✅").catch(() => {});
+    await ctx.reply(`⏳ ${list.rows.length} ta qoralama yuborilyapti…`).catch(() => {});
+    let sent = 0, failed = 0;
+    for (const { id } of list.rows) {
+      const r = await pool.query(
+        "UPDATE bot_drafts SET status = 'sending', decided_at = NOW() WHERE id = $1 AND status = 'pending' RETURNING user_id, text, owner_msg_id",
+        [id]
+      );
+      if (!r.rows.length) continue;
+      const { user_id, text, owner_msg_id } = r.rows[0];
+      let mark;
+      try {
+        await ctx.telegram.sendMessage(Number(user_id), text, { disable_web_page_preview: true });
+        await pool.query("UPDATE bot_drafts SET status = 'sent' WHERE id = $1", [id]);
+        record(null, user_id, "out");
+        sent++;
+        mark = `✅ Yuborildi ${tashkentTime()}`;
+      } catch (e) {
+        const err = e?.response?.error_code === 403 ? "mijoz botni bloklagan yoki botni hech ochmagan" : e.message;
+        await pool.query("UPDATE bot_drafts SET status = 'failed', error = $2 WHERE id = $1", [id, String(err).slice(0, 300)]);
+        failed++;
+        mark = `❌ Yuborilmadi: ${err}`;
+      }
+      if (owner_msg_id) {
+        await ctx.telegram.editMessageReplyMarkup(OWNER_ID, Number(owner_msg_id), undefined, { inline_keyboard: [] }).catch(() => {});
+        await ctx.telegram.sendMessage(OWNER_ID, mark, { reply_parameters: { message_id: Number(owner_msg_id), allow_sending_without_reply: true } }).catch(() => {});
+      }
+      await new Promise((res) => setTimeout(res, 350)); // Telegram limitiga tushmaslik uchun
+    }
+    await ctx.reply(`✅ Tayyor: ${sent} ta yuborildi` + (failed ? `, ${failed} ta yuborilmadi (botni bloklagan)` : "")).catch(() => {});
+  }
+
   bot.action(/^bdraft_(ok|no)_(\d+)$/, async (ctx) => {
     if (ctx.from?.id !== OWNER_ID) {
       return ctx.answerCbQuery("❌ Ruxsat yo'q", { show_alert: true }).catch(() => {});
@@ -201,6 +242,11 @@ export function registerBotDraftApi(app, { pool, botName }) {
 
       const u = await pool.query("SELECT username, name FROM users WHERE user_id = $1 LIMIT 1", [userId]);
       if (!u.rows.length) throw new Error("bu ID bazada yo'q (botga kirmagan)");
+      const recent = await pool.query(
+        "SELECT id FROM bot_drafts WHERE user_id = $1 AND status IN ('pending', 'sending', 'sent') AND created_at > NOW() - INTERVAL '12 hours' LIMIT 1",
+        [userId]
+      );
+      if (recent.rows.length) throw new Error(`bu mijozga 12 soat ichida qoralama bor (#${recent.rows[0].id}), takror yuborilmaydi`);
       const who = `${u.rows[0].name || "-"} | ${u.rows[0].username ? "@" + u.rows[0].username : "username yo'q"} | ID ${userId}`;
 
       const ins = await pool.query("INSERT INTO bot_drafts (user_id, text, note) VALUES ($1, $2, $3) RETURNING id", [
