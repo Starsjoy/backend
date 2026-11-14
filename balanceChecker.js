@@ -96,7 +96,10 @@ async function initCardLimitGuard(pool) {
         listUzcards: () => listCards()
             .filter((c) => c.brand === 'uzcard' && c.payable && c.configured)
             .map((c) => ({ slot: c.slot, last4: c.suffix })),
+        // HUMO *2146 avtomatik zaxiradan chiqarildi (2026-11-14: o'tkazmalar "hisob mavjud emas" deb qaytyapti).
+        // Qaytarish: CARD_LIMIT_HUMO_FALLBACK=1
         getHumo: () => {
+            if (process.env.CARD_LIMIT_HUMO_FALLBACK !== '1') return null;
             const h = listCards().find((c) => c.brand === 'humo' && c.payable && c.configured);
             return h ? { slot: h.slot, last4: h.suffix } : null;
         },
