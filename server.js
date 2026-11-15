@@ -1,3 +1,4 @@
+import { reserveAmount } from "./modules/payments/amountReservation.js";
 import express from "express";
 import pkg from "pg";
 import cors from "cors";
@@ -6547,6 +6548,10 @@ async function generateUniqueOrderSum(baseAmount, client) {
     );
 
     if (finalCheck.rows.length === 0) {
+      // 3-qadam: boshqa loyihalar bilan umumiy band qilish (bitta karta → bitta summa → bitta buyurtma)
+      if (!(await reserveAmount(candidate))) {
+        continue;
+      }
       selectedSum = candidate;
       break;
     }
