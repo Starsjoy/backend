@@ -136,6 +136,23 @@ export function registerDonatRoutes(app, ctx) {
     return items;
   }
 
+  // Sahifa (SSR) uchun: kesh bo'lsa darhol qaytadi, eskirgan bo'lsa fonda yangilanadi
+  const refreshing = new Set();
+  async function getItemsFast(game) {
+    const hit = catalogCache.get(game.slug);
+    if (!hit) return getItems(game);
+    if (Date.now() - hit.at > CATALOG_TTL_MS && !refreshing.has(game.slug)) {
+      refreshing.add(game.slug);
+      getItems(game, 0).catch(() => {}).finally(() => refreshing.delete(game.slug));
+    }
+    return hit.items;
+  }
+  function warmCatalog() {
+    for (const g of DONAT_GAMES) getItems(g, 0).catch(() => {});
+  }
+  setTimeout(warmCatalog, 5000);
+  setInterval(warmCatalog, CATALOG_TTL_MS - 30000);
+
   async function getItems(game, maxAgeMs = CATALOG_TTL_MS) {
     const hit = catalogCache.get(game.slug);
     if (hit && Date.now() - hit.at < maxAgeMs) return hit.items;
@@ -158,7 +175,7 @@ export function registerDonatRoutes(app, ctx) {
     let items = [];
     let available = true;
     try {
-      items = await getItems(game);
+      items = await getItemsFast(game);
     } catch {
       available = false;
     }
@@ -568,10 +585,21 @@ export function registerDonatRoutes(app, ctx) {
         : o.status === "failed" || o.status === "error" ? "problem"
         : o.status === "expired" || o.status === "cancelled" ? "expired"
         : "awaiting_payment";
+      // To'lov kutilayotgan bo'lsa karta (sahifa yangilansa ham ko'rinsin). Faol karta o'zgargan
+      // bo'lsa — eski karta raqami bizda saqlanmagan, faqat oxirgi 4 raqam qaytadi.
+      let card = null;
+      if (state === "awaiting_payment") {
+        const c = getPublicPaymentInfo();
+        const last4 = String(c.payment_card_number || "").replace(/\D/g, "").slice(-4);
+        card = last4 && last4 === o.card_last4
+          ? { number: c.payment_card_number, name: c.payment_card_name, brand: c.payment_brand, type: c.payment_card_type }
+          : { number: `**** ${o.card_last4}`, name: null, brand: null, type: null };
+      }
       res.set("Cache-Control", "no-store");
       res.json({
         success: true,
         state,
+        card,
         order_id: o.id,
         amount: o.summ,
         game: game?.title || o.game_slug,
