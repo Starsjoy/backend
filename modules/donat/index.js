@@ -197,20 +197,52 @@ export function registerDonatRoutes(app, ctx) {
   const cleanPlayerId = (v) => String(v || "").trim().replace(/\s+/g, "");
   const cleanText = (v, n) => String(v || "").replace(/[<>]/g, "").trim().slice(0, n);
 
+  // StarsPaymee kaliti Stars yetkazish bilan umumiy (~60 so'rov/daq). Ochiq donat endpointlari
+  // uni band qilib qo'ymasin: donat uchun umumiy limit + keshlar.
+  const providerHits = [];
+  const PROVIDER_PER_MIN = 20;
+  function providerBudget() {
+    const now = Date.now();
+    while (providerHits.length && now - providerHits[0] > 60000) providerHits.shift();
+    if (providerHits.length >= PROVIDER_PER_MIN) {
+      const err = new Error("Juda ko'p so'rov, birozdan keyin urinib ko'ring");
+      err.status = 429;
+      throw err;
+    }
+    providerHits.push(now);
+  }
+  const playerCache = new Map(); // `${code}:${id}:${item}` -> { at, value }
+  let balanceCache = { at: 0, value: null };
+  async function cachedBalance() {
+    if (balanceCache.value != null && Date.now() - balanceCache.at < 30000) return balanceCache.value;
+    providerBudget();
+    const b = await getPaymeeBalance();
+    balanceCache = { at: Date.now(), value: Number(b?.balance_usdt) };
+    return balanceCache.value;
+  }
+
   async function checkPlayer(game, playerId, itemName) {
+    const ck = `${game.code}:${playerId}:${itemName || ""}`;
+    const hit = playerCache.get(ck);
+    if (hit && Date.now() - hit.at < 10 * 60000) return hit.value;
+    if (playerCache.size > 5000) playerCache.clear();
+    providerBudget();
     const body = { player_id: playerId };
     if (itemName) body.denomination = itemName;
     const r = await partnerRequest(`/games/${encodeURIComponent(game.code)}/check-player`, {
       method: "POST",
       body: JSON.stringify(body),
     });
-    return { verified: Boolean(r.verified), player_name: r.player_name || null, region: r.player_region || null };
+    const value = { verified: Boolean(r.verified), player_name: r.player_name || null, region: r.player_region || null };
+    playerCache.set(ck, { at: Date.now(), value });
+    return value;
   }
 
   function playerErrorText(err) {
     const code = err?.body?.error_code || err?.body?.code || "";
-    if (code === "invalid_player" || err?.status === 400) return "ID topilmadi. Raqamni tekshirib qayta kiriting.";
+    if (err?.status === 429) return "Juda ko'p so'rov, bir daqiqadan keyin urinib ko'ring.";
     if (code === "wrong_region") return "Bu akkaunt boshqa mintaqada, bu paket unga yetkazilmaydi.";
+    if (code === "invalid_player" || err?.status === 400) return "ID topilmadi. Raqamni tekshirib qayta kiriting.";
     return "Hozir tekshirib bo'lmadi, birozdan keyin urinib ko'ring.";
   }
 
@@ -445,7 +477,7 @@ export function registerDonatRoutes(app, ctx) {
       const r = await checkPlayer(game, playerId, req.body?.item ? String(req.body.item) : null);
       res.json({ success: true, ...r });
     } catch (e) {
-      res.status(e.status === 400 ? 400 : 503).json({ success: false, error: playerErrorText(e) });
+      res.status(e.status === 400 ? 400 : e.status === 429 ? 429 : 503).json({ success: false, error: playerErrorText(e) });
     }
   });
 
@@ -498,9 +530,9 @@ export function registerDonatRoutes(app, ctx) {
 
       // StarsPaymee balansi yetadimi (yetmasa to'lov olmaymiz)
       try {
-        const bal = await getPaymeeBalance();
-        if (Number(bal?.balance_usdt) < item.usdt * 1.05) {
-          notifyAdmins(`⚠️ <b>Donat: StarsPaymee balansi kam</b> · ${esc(projectName)}\nKerak ~${item.usdt} USDT, bor ${esc(bal?.balance_usdt)}. Buyurtma qabul qilinmadi.`);
+        const bal = await cachedBalance();
+        if (bal < item.usdt * 1.05) {
+          notifyAdmins(`⚠️ <b>Donat: StarsPaymee balansi kam</b> · ${esc(projectName)}\nKerak ~${item.usdt} USDT, bor ${esc(bal)}. Buyurtma qabul qilinmadi.`);
           return res.status(503).json({ success: false, error: "Bu paket vaqtincha mavjud emas, birozdan keyin urinib ko'ring." });
         }
       } catch {
