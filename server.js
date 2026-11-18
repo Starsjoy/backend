@@ -49,6 +49,7 @@ import { registerPremiumWait } from "./modules/premiumWait/index.js";
 import { registerBotDraftApi } from "./modules/botRelay/index.js";
 import { registerAiWarning } from "./modules/aiWarning/index.js";
 import { registerDonatRoutes } from "./modules/donat/index.js";
+import { getPublicPaymentInfo } from "./modules/paymentSystem/index.js";
 import { notifyReferralStart } from "./modules/notifications/referralChannel.js";
 import { isBlockedReferralCode, buildReferralLink } from "./modules/users/referralLink.js";
 import { markUserSubscribed } from "./modules/users/subscription.js";
@@ -7478,6 +7479,10 @@ registerDonatRoutes(app, {
   ERROR_LOG_CHANNEL_ID,
   projectName: "StarsJoy",
   projectKey: "sj",
+  getCard: () => {
+    const c = getPublicPaymentInfo();
+    return { number: c.payment_card_number, name: c.payment_card_name, brand: c.payment_brand, type: c.payment_card_type };
+  },
 });
 registerPaymeePremiumRoutes(app, paymeePremiumCtx);
 registerRobynhoodAdminRoutes(app, { pool, adminAuth });

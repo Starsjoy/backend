@@ -18,8 +18,6 @@
  */
 import crypto from "crypto";
 import { partnerRequest, paymeeConfigured, getPaymeeBalance } from "../paymeeClient/index.js";
-import { claimOrderById } from "../payments/smsLedger.js";
-import { getPublicPaymentInfo } from "../paymentSystem/index.js";
 import { DONAT_GAMES, GAME_BY_SLUG, markupKey } from "./catalog.js";
 
 const ORDER_TYPE = "donat";
@@ -49,6 +47,7 @@ export function registerDonatRoutes(app, ctx) {
     ERROR_LOG_CHANNEL_ID,
     projectName = "StarsJoy",
     projectKey = "sj",
+    getCard, // () => { number, name, brand, type } — mijozga ko'rsatiladigan faol karta (loyihada har xil)
   } = ctx;
 
   // ───────────────────────── jadval ─────────────────────────
@@ -460,7 +459,7 @@ export function registerDonatRoutes(app, ctx) {
       await ready;
       const s = await getSettings();
       const games = await Promise.all(DONAT_GAMES.map((g) => publicGame(g, s)));
-      res.set("Cache-Control", "public, max-age=60");
+      res.set("Cache-Control", "no-cache"); // yoqish/o'chirish darhol ko'rinsin (narxlar serverda keshlanadi)
       res.json({ success: true, enabled: s.enabled && paymeeConfigured(), pay_window_min: PAY_WINDOW_MIN, games });
     } catch (e) {
       console.error("❌ /api/donat/catalog:", e.message);
@@ -541,8 +540,8 @@ export function registerDonatRoutes(app, ctx) {
 
       const markup = s.markups[game.slug];
       const price = priceUzs(item.usdt, s.rate, markup);
-      const card = getPublicPaymentInfo();
-      if (!card.payment_card_number) {
+      const card = getCard();
+      if (!card?.number) {
         return res.status(503).json({ success: false, error: "To'lov kartasi sozlanmagan" });
       }
 
@@ -566,7 +565,7 @@ export function registerDonatRoutes(app, ctx) {
                                      player_id, player_name, contact, lang, ip, usdt_price, usdt_rate, markup_percent, card_last4)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
           [order.id, token, site, game.slug, game.code, game.kind, item.id, item.name, playerId, playerName, contact, lang, ip,
-           item.usdt, s.rate, markup, String(card.payment_card_number).replace(/\D/g, "").slice(-4)]
+           item.usdt, s.rate, markup, String(card.number).replace(/\D/g, "").slice(-4)]
         );
         await client.query("COMMIT");
       } catch (e) {
@@ -585,12 +584,7 @@ export function registerDonatRoutes(app, ctx) {
         amount: order.summ,
         price,
         expires_at: new Date(new Date(order.created_at).getTime() + PAY_WINDOW_MIN * 60000).toISOString(),
-        card: {
-          number: card.payment_card_number,
-          name: card.payment_card_name,
-          brand: card.payment_brand,
-          type: card.payment_card_type,
-        },
+        card: { number: card.number, name: card.name, brand: card.brand, type: card.type },
       });
     } catch (e) {
       console.error("❌ /api/donat/order:", e.message);
@@ -621,10 +615,10 @@ export function registerDonatRoutes(app, ctx) {
       // bo'lsa — eski karta raqami bizda saqlanmagan, faqat oxirgi 4 raqam qaytadi.
       let card = null;
       if (state === "awaiting_payment") {
-        const c = getPublicPaymentInfo();
-        const last4 = String(c.payment_card_number || "").replace(/\D/g, "").slice(-4);
+        const c = getCard() || {};
+        const last4 = String(c.number || "").replace(/\D/g, "").slice(-4);
         card = last4 && last4 === o.card_last4
-          ? { number: c.payment_card_number, name: c.payment_card_name, brand: c.payment_brand, type: c.payment_card_type }
+          ? { number: c.number, name: c.name, brand: c.brand, type: c.type }
           : { number: `**** ${o.card_last4}`, name: null, brand: null, type: null };
       }
       res.set("Cache-Control", "no-store");
@@ -655,7 +649,14 @@ export function registerDonatRoutes(app, ctx) {
       const amount = parseInt(req.body?.amount, 10);
       if (!amount || amount <= 0) return res.status(400).json({ error: "amount noto'g'ri" });
       const updated = req.body?.order_id
-        ? await claimOrderById(pool, { orderId: req.body.order_id, amount, orderTypes: [ORDER_TYPE] })
+        ? await pool.query(
+            // SMS vaqti bo'yicha aniqlangan buyurtma (expired bo'lsa ham — to'lov taymer ichida bo'lgan)
+            `UPDATE orders SET payment_status = 'paid', status = 'processing'
+              WHERE id = $1 AND summ = $2 AND order_type = $3
+                AND payment_status IN ('pending','expired') AND status IN ('pending','expired')
+              RETURNING *`,
+            [Number(req.body.order_id), amount, ORDER_TYPE]
+          )
         : await pool.query(
             `UPDATE orders SET payment_status = 'paid', status = 'processing'
               WHERE id = (SELECT id FROM orders WHERE summ = $1 AND payment_status = 'pending' AND status = 'pending'
