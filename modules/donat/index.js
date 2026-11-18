@@ -665,6 +665,26 @@ export function registerDonatRoutes(app, ctx) {
     }
   });
 
+  // Mijoz "Bekor qilish" bosdi: to'lanmagan buyurtma darhol yopiladi (expired — keyin SMS kelsa
+  // ham SMS daftari uni taymer ichidagi to'lov sifatida tiklay oladi, pul yo'qolmaydi)
+  app.post("/api/donat/order/:token/cancel", async (req, res) => {
+    try {
+      const token = String(req.params.token || "");
+      if (!/^[A-Za-z0-9_-]{20,40}$/.test(token)) return res.status(404).json({ success: false });
+      const r = await pool.query(
+        `UPDATE orders o SET status = 'expired', payment_status = 'expired'
+           FROM donat_orders d
+          WHERE d.order_id = o.id AND d.token = $1 AND o.status = 'pending' AND o.payment_status = 'pending'
+          RETURNING o.id`,
+        [token]
+      );
+      if (r.rowCount) removePriceFromCacheByOrderId(r.rows[0].id);
+      res.json({ success: true, cancelled: r.rowCount > 0 });
+    } catch (e) {
+      res.status(500).json({ success: false });
+    }
+  });
+
   // ───────────────────────── ichki: SMS match ─────────────────────────
   app.post("/api/donat/match", internalSecretAuth, async (req, res) => {
     try {
