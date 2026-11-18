@@ -133,7 +133,7 @@ export function registerDonatRoutes(app, ctx) {
       .filter((d) => Number(d.stock) > 0)
       .map((d) => ({ id: d.card_id, name: d.name, usdt: Number(d.price_usdt) }));
     if (game.allow.length) items = items.filter((x) => game.allow.includes(x.name));
-    return items;
+    return items.sort((a, b) => a.usdt - b.usdt); // kodlar katalogda aralash tartibda keladi
   }
 
   // Sahifa (SSR) uchun: kesh bo'lsa darhol qaytadi, eskirgan bo'lsa fonda yangilanadi
