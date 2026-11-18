@@ -8,9 +8,10 @@
  *    — jamg'arma maqsadi. Karta esa faqat StarsJoy'da almashadi.
  *    6% = sof foydaning (12%) yarmi: *5830 ga tushgan buyurtmalarning tannarxi aylanmadan to'lanadi,
  *    shuning uchun 12% olinsa foydaning deyarli hammasi jamg'armaga ketardi.
- *  - Qarz = barcha maqsadlar − jamg'arma kartasiga (uzcard3) tushgan barcha pul. Qarz SAVINGS_MIN (50 000) dan oshsa
+ *  - Qarz = BUGUNGI maqsadlar − bugun jamg'arma kartasiga (uzcard3) tushgan pul (Toshkent kuni, 00:00 dan).
+ *    Qarz ham, ortiqcha ham ertasi kunga o'tmaydi (2026-11-18 talabi). Qarz SAVINGS_MIN (50 000) dan oshsa
  *    mijozlarga jamg'arma kartasi ko'rsatiladi, qarz yopilgach avvalgi kartaga qaytiladi.
- *    Ortiqcha tushgani (almashish paytida to'lov oynasi ochiq qolganlar) keyingi davrdan ayiriladi.
+ *    Ortiqcha tushgani faqat shu kunning keyingi davrlaridan ayiriladi.
  *  - Kartani admin yoki limit avtomatikasi almashtirsa — keyingi hisob nuqtasigacha aralashilmaydi.
  *  - Jamg'arma kartasi oxirgi 3 kunda limit olgan bo'lsa yoqilmaydi; qaytishda limitdagi karta tanlanmaydi.
  *  - Xabar faqat @shavkatov_ff ga va faqat ikki holatda: karta jamg'armaga o'tganda (kutilayotgan summa)
@@ -74,6 +75,12 @@ export function checkpointsBetween(from, to) {
     }
   }
   return out;
+}
+
+/** Toshkent bo'yicha shu kunning boshi (00:00) */
+export function dayStart(now) {
+  const day = Math.floor((now.getTime() + TZ_OFFSET_MS) / 86400000);
+  return new Date(day * 86400000 - TZ_OFFSET_MS);
 }
 
 /** Keyingi hisob nuqtasi */
@@ -171,16 +178,21 @@ export function createSavingsCard({
     return { total: parts.reduce((a, p) => a + p.sum, 0), breakdown: Object.fromEntries(parts.map((p) => [p.name, p.sum])) };
   }
 
-  /** Umumiy hisob: maqsadlar, jamg'arma kartasiga tushgani, qarz */
-  async function totals(client, startedAt) {
+  /**
+   * Kunlik hisob: maqsadlar, jamg'arma kartasiga tushgani, qarz — faqat Toshkent bo'yicha bugungi kun ichida.
+   * Foydalanuvchi talabi (2026-11-18): qarz ham, ortiqcha ham ertasi kunga o'tmaydi, har kuni 00:00 da 0 dan.
+   * 00:00 hisob nuqtasi (kechagi 20:00–00:00 tushumi) yangi kunga tegishli — shu kun ichida yig'iladi.
+   */
+  async function totals(client, startedAt, now = new Date()) {
+    const from = new Date(Math.max(dayStart(now).getTime(), startedAt.getTime()));
     const [t, c] = await Promise.all([
-      client.query(`SELECT COALESCE(SUM(target), 0)::bigint AS s FROM savings_checkpoints`),
+      client.query(`SELECT COALESCE(SUM(target), 0)::bigint AS s FROM savings_checkpoints WHERE checkpoint_at >= $1`, [from]),
       // Kartaga tushgan HAR QANDAY pul hisoblanadi: buyurtmaga mos kelmagan to'lov ham (mijoz summani
       // noto'g'ri yozgan va h.k.) baribir jamg'arma kartasida turibdi
       client.query(
         `SELECT COALESCE(SUM(amount), 0)::bigint AS s FROM sms_payments
          WHERE card_last4 = $1 AND received_at >= $2`,
-        [savingsLast4, startedAt]
+        [savingsLast4, from]
       ),
     ]);
     const target = Number(t.rows[0].s);
@@ -225,7 +237,7 @@ export function createSavingsCard({
         periodStart = cp;
       }
 
-      const sum = await totals(client, startedAt);
+      const sum = await totals(client, startedAt, now);
       const setting = await client.query(`SELECT value FROM settings WHERE key = $1`, [settingKey]);
       const currentSlot = setting.rows[0]?.value || "uzcard1";
       const cards = listUzcards();
@@ -263,11 +275,17 @@ export function createSavingsCard({
       } else if (decision.action === "restore") {
         await setSlot(client, decision.slot);
         await client.query(`UPDATE savings_state SET active = false, activated_at = NULL WHERE id = 1`);
-        const thisTime = sum.collected - Number(st.collected_at_activation || 0);
+        // Kunlik hisob yarim tunda 0 ga tushadi, shuning uchun "shu safar" alohida — faollashgan paytdan beri
+        const thisTime = st.activated_at
+          ? Number((await client.query(
+              `SELECT COALESCE(SUM(amount), 0)::bigint AS s FROM sms_payments WHERE card_last4 = $1 AND received_at >= $2`,
+              [savingsLast4, st.activated_at]
+            )).rows[0].s)
+          : 0;
         messages.push(
           `✅ StarsJoy kartasi *${last4Of(decision.slot)} ga qaytdi\n\n` +
             `*${savingsLast4} ga tushdi: ${fmt(thisTime)} so'm` +
-            (sum.outstanding < 0 ? `\n(${fmt(-sum.outstanding)} so'm ortiqcha — keyingi davrdan ayiriladi)` : "")
+            (sum.outstanding < 0 ? `\n(${fmt(-sum.outstanding)} so'm ortiqcha — bugungi keyingi davrlardan ayiriladi)` : "")
         );
       } else if (decision.action === "stop") {
         const until = nextCheckpoint(now);
@@ -291,7 +309,7 @@ export function createSavingsCard({
   async function status(now = new Date()) {
     const st = (await pool.query(`SELECT * FROM savings_state WHERE id = 1`)).rows[0];
     if (!st) return null;
-    const sum = await totals(pool, new Date(st.started_at));
+    const sum = await totals(pool, new Date(st.started_at), now);
     const recent = await pool.query(
       `SELECT checkpoint_at, period_start, revenue, target, breakdown FROM savings_checkpoints ORDER BY checkpoint_at DESC LIMIT 6`
     );
