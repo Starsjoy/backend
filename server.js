@@ -48,6 +48,7 @@ import { logIdentity } from "./modules/users/identityLog.js";
 import { registerPremiumWait } from "./modules/premiumWait/index.js";
 import { registerBotDraftApi } from "./modules/botRelay/index.js";
 import { registerAiWarning } from "./modules/aiWarning/index.js";
+import { registerDonatRoutes } from "./modules/donat/index.js";
 import { notifyReferralStart } from "./modules/notifications/referralChannel.js";
 import { isBlockedReferralCode, buildReferralLink } from "./modules/users/referralLink.js";
 import { markUserSubscribed } from "./modules/users/subscription.js";
@@ -144,6 +145,9 @@ app.use(helmet({
 const ALLOWED_ORIGINS = [
   'https://vitahealth.uz',
   'https://www.vitahealth.uz',
+  // Donat sahifasi saytdan chaqiradi (starsjoy.uz/donat)
+  'https://starsjoy.uz',
+  'https://www.starsjoy.uz',
   'https://web.telegram.org',
   'https://t.me',
   process.env.WEBAPP_URL,
@@ -7458,6 +7462,23 @@ const paymeePremiumCtx = {
 };
 
 registerPaymeeStarsRoutes(app, paymeeStarsCtx);
+
+// 🎮 Donat (o'yin valyutasi) — starsjoy.uz/donat
+registerDonatRoutes(app, {
+  pool,
+  bot,
+  adminAuth,
+  internalSecretAuth,
+  orderLimiterBase,
+  searchLimiter,
+  generateUniqueOrderSum,
+  addPriceToCache,
+  removePriceFromCacheByOrderId,
+  ORDERS_CHANNEL,
+  ERROR_LOG_CHANNEL_ID,
+  projectName: "StarsJoy",
+  projectKey: "sj",
+});
 registerPaymeePremiumRoutes(app, paymeePremiumCtx);
 registerRobynhoodAdminRoutes(app, { pool, adminAuth });
 

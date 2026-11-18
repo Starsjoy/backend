@@ -57,6 +57,7 @@ const MATCH_API_PREMIUM = process.env.MATCH_API_PREMIUM;
 const MATCH_API_PREMIUM_PAYMEE = process.env.MATCH_API_PREMIUM_PAYMEE;
 const MATCH_API_PREMIUM_USDT = process.env.MATCH_API_PREMIUM_USDT;
 const MATCH_API_GIFT = process.env.MATCH_API_GIFT || 'http://localhost:5001/api/gift/match';
+const MATCH_API_DONAT = process.env.MATCH_API_DONAT || 'http://localhost:5001/api/donat/match';
 const INTERNAL_SECRET = process.env.INTERNAL_API_SECRET || '';
 const BALANCE_CHECKER_PORT = 5002;
 
@@ -78,6 +79,7 @@ const MATCH_URL_BY_TYPE = {
     premium_usdt: MATCH_API_PREMIUM_USDT,
     premium: MATCH_API_PREMIUM,
     gift: MATCH_API_GIFT,
+    donat: MATCH_API_DONAT,
 };
 const CHAIN_TYPES = Object.keys(MATCH_URL_BY_TYPE).filter((t) => MATCH_URL_BY_TYPE[t]);
 
@@ -315,9 +317,19 @@ async function runLegacyMatchChain(parsed) {
             const result = await res.json();
             console.log("🎁 Gift to'lov topildi:", result);
             return result;
-        } else {
-            console.log("⚠️ Hech qaysi bazada topilmadi");
         }
+        // Donat (o'yin valyutasi, sayt orqali)
+        res = await fetch(MATCH_API_DONAT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Internal-Key": INTERNAL_SECRET },
+            body: JSON.stringify({ amount: parsed.amount, card_last4: parsed.card_last4 }),
+        });
+        if (res.ok) {
+            const result = await res.json();
+            console.log("🎮 Donat to'lov topildi:", result);
+            return result;
+        }
+        console.log("⚠️ Hech qaysi bazada topilmadi");
     }
     return null;
 }
