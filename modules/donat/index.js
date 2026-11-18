@@ -81,6 +81,7 @@ export function registerDonatRoutes(app, ctx) {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         delivered_at TIMESTAMPTZ
       )`);
+    await pool.query(`ALTER TABLE donat_orders ADD COLUMN IF NOT EXISTS server_id TEXT`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_donat_orders_created ON donat_orders (created_at)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_donat_orders_ip ON donat_orders (ip, created_at)`);
   })().catch((e) => console.error("❌ donat_orders jadval:", e.message));
@@ -184,6 +185,8 @@ export function registerDonatRoutes(app, ctx) {
       unit: game.unit,
       kind: game.kind,
       needs_player_id: game.kind === "game",
+      needs_server: Boolean(game.needsServer),
+      secret_kind: game.kind === "giftcard" ? game.secretKind || "code" : null,
       id_label: game.idLabel,
       id_hint: game.idHint,
       available: available && items.length > 0,
@@ -194,6 +197,8 @@ export function registerDonatRoutes(app, ctx) {
   // ───────────────────────── yordamchilar ─────────────────────────
   const clientIp = (req) => String(req.ip || req.headers["x-forwarded-for"] || "").split(",")[0].trim();
   const cleanPlayerId = (v) => String(v || "").trim().replace(/\s+/g, "");
+  const cleanServerId = (v) => String(v || "").trim().replace(/[\s()]/g, "");
+  const SERVER_RE = /^\d{1,8}$/;
   const cleanText = (v, n) => String(v || "").replace(/[<>]/g, "").trim().slice(0, n);
 
   // StarsPaymee kaliti Stars yetkazish bilan umumiy (~60 so'rov/daq). Ochiq donat endpointlari
@@ -220,13 +225,14 @@ export function registerDonatRoutes(app, ctx) {
     return balanceCache.value;
   }
 
-  async function checkPlayer(game, playerId, itemName) {
-    const ck = `${game.code}:${playerId}:${itemName || ""}`;
+  async function checkPlayer(game, playerId, itemName, serverId = null) {
+    const ck = `${game.code}:${playerId}:${serverId || ""}:${itemName || ""}`;
     const hit = playerCache.get(ck);
     if (hit && Date.now() - hit.at < 10 * 60000) return hit.value;
     if (playerCache.size > 5000) playerCache.clear();
     providerBudget();
     const body = { player_id: playerId };
+    if (serverId) body.server_id = serverId;
     if (itemName) body.denomination = itemName;
     const r = await partnerRequest(`/games/${encodeURIComponent(game.code)}/check-player`, {
       method: "POST",
@@ -286,7 +292,9 @@ export function registerDonatRoutes(app, ctx) {
     );
     if (upd.rowCount) {
       console.log(`✅ Donat #${o.id} yetkazildi (${o.provider_code} ${o.item_name})`);
-      const who = o.kind === "game" ? `${esc(o.player_id)}${o.player_name ? ` (${esc(o.player_name)})` : ""}` : "havola mijozga berildi";
+      const who = o.kind === "game"
+        ? `${esc(o.player_id)}${o.server_id ? ` (${esc(o.server_id)})` : ""}${o.player_name ? ` · ${esc(o.player_name)}` : ""}`
+        : "kod/havola mijozga berildi";
       notifyChannel(
         `🎮 <b>Yangi donat sotildi!</b>\n\n` +
           `📦 Order: #${o.id} · ${esc(projectName)}${o.site ? ` · ${esc(o.site)}` : ""}\n` +
@@ -382,7 +390,12 @@ export function registerDonatRoutes(app, ctx) {
       if (o.kind === "game") {
         data = await partnerRequest(`/games/${encodeURIComponent(o.provider_code)}/order`, {
           method: "POST",
-          body: JSON.stringify({ denomination: o.item_id, player_id: o.player_id, idempotency_key: idem }),
+          body: JSON.stringify({
+            denomination: o.item_id,
+            player_id: o.player_id,
+            ...(o.server_id ? { server_id: o.server_id } : {}),
+            idempotency_key: idem,
+          }),
         });
       } else {
         data = await partnerRequest(`/giftcards/${encodeURIComponent(o.provider_code)}/order`, {
@@ -473,7 +486,9 @@ export function registerDonatRoutes(app, ctx) {
       const playerId = cleanPlayerId(req.body?.player_id);
       if (!game || game.kind !== "game") return res.status(400).json({ success: false, error: "O'yin noto'g'ri" });
       if (!/^[0-9A-Za-z._-]{4,40}$/.test(playerId)) return res.status(400).json({ success: false, error: "ID noto'g'ri" });
-      const r = await checkPlayer(game, playerId, req.body?.item ? String(req.body.item) : null);
+      const serverId = game.needsServer ? cleanServerId(req.body?.server_id) : null;
+      if (game.needsServer && !SERVER_RE.test(serverId || "")) return res.status(400).json({ success: false, error: "Zone ID'ni kiriting" });
+      const r = await checkPlayer(game, playerId, req.body?.item ? String(req.body.item) : null, serverId);
       res.json({ success: true, ...r });
     } catch (e) {
       res.status(e.status === 400 ? 400 : e.status === 429 ? 429 : 503).json({ success: false, error: playerErrorText(e) });
@@ -516,11 +531,16 @@ export function registerDonatRoutes(app, ctx) {
 
       let playerId = null;
       let playerName = null;
+      let serverId = null;
       if (game.kind === "game") {
         playerId = cleanPlayerId(req.body?.player_id);
         if (!/^[0-9A-Za-z._-]{4,40}$/.test(playerId)) return res.status(400).json({ success: false, error: "ID noto'g'ri" });
+        if (game.needsServer) {
+          serverId = cleanServerId(req.body?.server_id);
+          if (!SERVER_RE.test(serverId || "")) return res.status(400).json({ success: false, error: "Zone ID'ni kiriting" });
+        }
         try {
-          const p = await checkPlayer(game, playerId, item.name);
+          const p = await checkPlayer(game, playerId, item.name, serverId);
           playerName = p.player_name;
         } catch (e) {
           return res.status(400).json({ success: false, error: playerErrorText(e) });
@@ -562,10 +582,10 @@ export function registerDonatRoutes(app, ctx) {
         order = r.rows[0];
         await client.query(
           `INSERT INTO donat_orders (order_id, token, site, game_slug, provider_code, kind, item_id, item_name,
-                                     player_id, player_name, contact, lang, ip, usdt_price, usdt_rate, markup_percent, card_last4)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+                                     player_id, player_name, contact, lang, ip, usdt_price, usdt_rate, markup_percent, card_last4, server_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
           [order.id, token, site, game.slug, game.code, game.kind, item.id, item.name, playerId, playerName, contact, lang, ip,
-           item.usdt, s.rate, markup, String(card.number).replace(/\D/g, "").slice(-4)]
+           item.usdt, s.rate, markup, String(card.number).replace(/\D/g, "").slice(-4), serverId]
         );
         await client.query("COMMIT");
       } catch (e) {
@@ -598,7 +618,7 @@ export function registerDonatRoutes(app, ctx) {
       if (!/^[A-Za-z0-9_-]{20,40}$/.test(token)) return res.status(404).json({ success: false });
       const r = await pool.query(
         `SELECT o.id, o.summ, o.status, o.payment_status, o.created_at, d.game_slug, d.kind, d.item_name,
-                d.player_id, d.player_name, d.secret, d.card_last4, d.delivered_at
+                d.player_id, d.player_name, d.server_id, d.secret, d.card_last4, d.delivered_at
            FROM donat_orders d JOIN orders o ON o.id = d.order_id WHERE d.token = $1`,
         [token]
       );
@@ -636,7 +656,9 @@ export function registerDonatRoutes(app, ctx) {
         created_at: o.created_at,
         expires_at: new Date(new Date(o.created_at).getTime() + PAY_WINDOW_MIN * 60000).toISOString(),
         delivered_at: o.delivered_at,
+        server_id: o.server_id,
         link: state === "delivered" && o.kind === "giftcard" ? o.secret : null,
+        secret_kind: o.kind === "giftcard" ? game?.secretKind || "code" : null,
       });
     } catch (e) {
       res.status(500).json({ success: false });
@@ -685,7 +707,7 @@ export function registerDonatRoutes(app, ctx) {
       const paidOnly = req.query.paid === "1";
       const r = await pool.query(
         `SELECT o.id, o.summ, o.status, o.payment_status, o.created_at, o.transaction_id,
-                d.site, d.game_slug, d.item_name, d.player_id, d.player_name, d.contact, d.provider_order_id,
+                d.site, d.game_slug, d.item_name, d.player_id, d.server_id, d.player_name, d.contact, d.provider_order_id,
                 d.provider_status, d.usdt_price, d.usdt_charged, d.markup_percent, d.error, d.attempts, d.delivered_at, d.card_last4
            FROM orders o JOIN donat_orders d ON d.order_id = o.id
           WHERE o.order_type = $1 ${paidOnly ? "AND o.payment_status = 'paid'" : ""}
