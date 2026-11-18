@@ -19,6 +19,8 @@ export const SETTING_KEYS = {
   PAYMENT_SYSTEM: "payment_system",
   /** Balans muammosi: mijozga "buyurtma 12 soatgacha kechikishi mumkin" ogohlantirishi */
   DELAY_NOTICE: "delay_notice",
+  /** Bot/Mini App/buyurtma — faqat kanalga obuna bo'lganlarga */
+  FORCE_SUBSCRIPTION: "force_subscription",
 };
 
 const DEFAULTS = {
@@ -28,6 +30,7 @@ const DEFAULTS = {
   [SETTING_KEYS.USERBOT_AUTO_REFILL]: "true",
   [SETTING_KEYS.PAYMENT_SYSTEM]: "uzcard1",
   [SETTING_KEYS.DELAY_NOTICE]: "false",
+  [SETTING_KEYS.FORCE_SUBSCRIPTION]: "false",
 };
 
 /** Eski `tokens` jadvalidan bir martalik ko'chirish */
@@ -130,6 +133,7 @@ export async function loadSettings(pool, force = false) {
     ),
     payment_system: normalizeCardSlot(map[SETTING_KEYS.PAYMENT_SYSTEM]),
     delay_notice: parseBoolSetting(map[SETTING_KEYS.DELAY_NOTICE], false),
+    force_subscription: parseBoolSetting(map[SETTING_KEYS.FORCE_SUBSCRIPTION], false),
   };
 
   // paymentSystem moduli aktiv kartani runtime'da saqlaydi — DB bilan sinxron
@@ -153,6 +157,7 @@ export function toPublicAppConfig(settings) {
   return {
     maintenance: Boolean(settings.maintenance),
     delay_notice: Boolean(settings.delay_notice),
+    force_subscription: Boolean(settings.force_subscription),
     stars_purchase_mode: mode,
     stars_purchase_path: starsPath,
     premium_purchase_path: premiumPath,
@@ -183,6 +188,11 @@ export async function setStarsPurchaseMode(pool, mode) {
 export async function setFragmentPaymentMethod(pool, method) {
   const pm = normalizeFragmentPaymentMethod(method);
   await setSetting(pool, SETTING_KEYS.FRAGMENT_PAYMENT_METHOD, pm);
+  return loadSettings(pool, true);
+}
+
+export async function setForceSubscription(pool, enabled) {
+  await setSetting(pool, SETTING_KEYS.FORCE_SUBSCRIPTION, enabled ? "true" : "false");
   return loadSettings(pool, true);
 }
 

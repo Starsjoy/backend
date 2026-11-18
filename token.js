@@ -57,14 +57,47 @@ const broadcastState = new Map();
 // Kanalga obuna tekshirish
 // ===============================
 async function isSubscribed(ctx, userId) {
+  return (await subscriptionState(ctx, userId)) === true;
+}
+
+/** true | false | null (Telegram xatosi — majburiy rejimda user o'tkaziladi) */
+async function subscriptionState(ctx, userId) {
   try {
     const member = await ctx.telegram.getChatMember(REQUIRED_CHANNEL, userId);
-    return ['member', 'administrator', 'creator'].includes(member.status);
+    return ['member', 'administrator', 'creator'].includes(member.status) ||
+      (member.status === 'restricted' && member.is_member === true);
   } catch (err) {
     // Agar bot kanalda admin bo'lmasa yoki xatolik bo'lsa
     console.error('❌ Obuna tekshirishda xato:', err?.message || err);
+    return null;
+  }
+}
+
+async function forceSubscriptionOn() {
+  try {
+    return Boolean((await loadSettings(pool)).force_subscription);
+  } catch {
     return false;
   }
+}
+
+const FORCE_SUB_URL = `https://t.me/${REQUIRED_CHANNEL.replace(/^@/, '')}`;
+
+function getForceSubText() {
+  return `
+🇺🇿 *Botdan foydalanish uchun rasmiy kanalimizga obuna bo'ling*, so'ng "✅ Tekshirish" tugmasini bosing.
+
+🇷🇺 *Чтобы пользоваться ботом, подпишитесь на наш официальный канал*, затем нажмите "✅ Tekshirish".
+
+🇬🇧 *To use the bot, subscribe to our official channel*, then tap "✅ Tekshirish".
+`;
+}
+
+function getForceSubKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.url("📢 Obuna bo'lish / Подписаться", FORCE_SUB_URL)],
+    [Markup.button.callback('✅ Tekshirish', 'check_subscription')]
+  ]);
 }
 
 function getSubscribeText() {
@@ -215,7 +248,16 @@ bot.start(async (ctx) => {
     await safeReply(ctx, FAKE_PROMO_WARNING);
   }
 
-  // Obuna MAJBURIY EMAS: hammaga darhol START
+  // Majburiy obuna (admin switch) — kanalda bo'lmasa avval obuna xabari
+  if (await forceSubscriptionOn()) {
+    const state = await subscriptionState(ctx, userId);
+    if (state === false) {
+      return await safeReply(ctx, getForceSubText(), getForceSubKeyboard());
+    }
+    // null — Telegram xatosi: savdo to'xtamasin, START ko'rsatiladi
+  }
+
+  // Obuna bo'lgan (yoki majburiy rejim o'chiq) — START
   await safeReply(ctx, getStartText(), getStartKeyboard());
 
   // Kutib turgan qarz eslatmasi (faqat ro'yxatdagi userlar, bir marta)

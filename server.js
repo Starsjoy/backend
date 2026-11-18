@@ -1,3 +1,4 @@
+import { configureForceSubscription, registerSubscriptionRoutes, subscriptionGate } from "./modules/users/forceSubscription.js";
 import { reserveAmount } from "./modules/payments/amountReservation.js";
 import express from "express";
 import pkg from "pg";
@@ -209,11 +210,13 @@ const generalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-const orderLimiter = rateLimit({
+const orderLimiterBase = rateLimit({
   windowMs: 5 * 60 * 1000, // 5 daqiqa
   max: 20, // har bir IP dan 20 ta order
   message: { error: 'Juda ko\'p order. 5 daqiqadan keyin urinib ko\'ring.' },
 });
+// Buyurtma yaratish yo'llari: rate limit + majburiy kanal obunasi (admin switch)
+const orderLimiter = [orderLimiterBase, subscriptionGate];
 const searchLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 daqiqa
   max: 15, // har bir IP dan 15 ta search
@@ -3990,7 +3993,8 @@ app.get("/api/admin/warnings", adminAuth, async (req, res) => {
       : `(o.status IN ('failed', 'error') OR ${WARNING_STUCK_SQL})`;
     const baseSql = `FROM orders o
       LEFT JOIN users u ON o.owner_user_id = u.user_id
-      WHERE o.order_type IN ${WARNING_ORDER_TYPES}`;
+      WHERE o.order_type IN ${WARNING_ORDER_TYPES}
+        AND NOT EXISTS (SELECT 1 FROM ai_payment_warnings aw WHERE aw.order_id = o.id AND aw.status = 'open')`;
 
     const searchParams = [];
     const searchSql = orderSearchSql(req.query.search, searchParams);
@@ -7458,6 +7462,14 @@ registerPaymeePremiumRoutes(app, paymeePremiumCtx);
 registerRobynhoodAdminRoutes(app, { pool, adminAuth });
 
 registerSettingsRoutes(app, { pool, adminAuth, internalAuth });
+configureForceSubscription({
+  pool,
+  getBot: () => bot,
+  channel: SUBSCRIPTION_CHANNEL,
+  validateInitData: validateTelegramInitData,
+  adminIds: (process.env.ADMIN_IDS || "").split(",").map((x) => Number(x.trim())).filter(Boolean),
+});
+registerSubscriptionRoutes(app, { telegramAuth });
 registerUserbotStarRefillRoutes(app, {
   pool,
   adminAuth,

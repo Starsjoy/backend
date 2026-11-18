@@ -7,6 +7,7 @@ export {
   toPublicAppConfig,
   setMaintenance,
   setDelayNotice,
+  setForceSubscription,
   setStarsPurchaseMode,
   setFragmentPaymentMethod,
   setUserbotAutoRefill,

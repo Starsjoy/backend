@@ -244,7 +244,8 @@ export function registerAiWarning(app, { pool, adminAuth, ledgerEnvFile = "", pe
            FROM ai_payment_warnings w
            JOIN orders o ON o.id = w.order_id
            LEFT JOIN users u ON u.user_id::text = o.owner_user_id::text
-          WHERE w.status = 'open' AND o.payment_status <> 'paid'
+          WHERE w.status = 'open' AND o.status NOT IN ('completed', 'delivered', 'cancelled')
+            AND (o.payment_status <> 'paid' OR o.status IN ('processing', 'failed', 'error'))
           ORDER BY o.created_at ASC`
       );
       res.json({ success: true, items: r.rows });
