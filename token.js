@@ -636,6 +636,17 @@ bot.on('my_chat_member', (ctx, next) => {
 // ===============================
 // Botni ishga tushirish
 // ===============================
-bot.launch()
-  .then(() => console.log("🚀 Bot ishlayapti..."))
-  .catch(err => console.error("Bot launch error:", err));
+// Telegram'ga ulanib bo'lmasa (tarmoq/IPv6 timeout) bot jimgina to'xtab qolmasin: qayta urinadi.
+// Avval xato logga yozilib jarayon exit 0 bilan tugardi va main.js uni qayta ishga tushirmasdi.
+let launchAttempt = 0;
+function launchBot() {
+  launchAttempt += 1;
+  bot.launch()
+    .then(() => console.log("🚀 Bot ishlayapti..."))
+    .catch((err) => {
+      const wait = Math.min(60000, 5000 * launchAttempt);
+      console.error(`Bot launch error (urinish ${launchAttempt}), ${wait / 1000}s dan keyin qayta:`, err?.code || err?.message || err);
+      setTimeout(launchBot, wait);
+    });
+}
+launchBot();
