@@ -341,6 +341,10 @@ export function registerDonatRoutes(app, ctx) {
           data = await partnerRequest(path);
         } catch (e) {
           if (e.status === 404) return finishFailed(o, "StarsPaymee buyurtmani topmadi (404)");
+          // partnerRequest success:false ni xato qilib otadi — bu vaqtinchalik emas, buyurtma bajarilmagan
+          if (e.body?.status === "failed") {
+            return finishFailed(o, e.body.error || e.message || "StarsPaymee: failed", { refunded: e.body.refunded !== false });
+          }
           continue; // vaqtinchalik — keyingi aylanishda
         }
         await pool.query(`UPDATE donat_orders SET provider_status = $2, updated_at = NOW() WHERE order_id = $1`, [
@@ -405,6 +409,12 @@ export function registerDonatRoutes(app, ctx) {
       }
     } catch (e) {
       const st = e.status;
+      if (e.body?.status === "failed") {
+        if (e.body.order_id != null) {
+          await pool.query(`UPDATE donat_orders SET provider_order_id = $2 WHERE order_id = $1`, [orderId, String(e.body.order_id)]);
+        }
+        return finishFailed(o, e.body.error || e.message || "StarsPaymee: failed", { refunded: e.body.refunded !== false });
+      }
       if (st === 503 || st === 429 || st === 500 || !st) {
         // Buyurtma yaratilmagan, pul yechilmagan — sweeper keyinroq o'sha kalit bilan qayta urinadi
         await pool.query(`UPDATE donat_orders SET error = $2, updated_at = NOW() WHERE order_id = $1`, [
