@@ -32,6 +32,9 @@ const SETTING = {
   rate: "donat_usdt_rate",
 };
 
+// Newbie Offer, First Purchase Pack, First Top-Up Bonus va h.k.
+const ONE_TIME_RE = /newbie|first[\s-]*(purchase|top[\s-]*up)/i;
+
 export function registerDonatRoutes(app, ctx) {
   const {
     pool,
@@ -121,7 +124,10 @@ export function registerDonatRoutes(app, ctx) {
   async function fetchProviderItems(game) {
     if (game.kind === "game") {
       const c = await partnerRequest(`/games/${encodeURIComponent(game.code)}/catalogue`);
-      let items = (c.denominations || []).map((d) => ({ id: d.name, name: d.name, usdt: Number(d.price_usdt) }));
+      let items = (c.denominations || [])
+        // Faqat birinchi xaridda ishlaydigan paketlar sotilmaydi: avval olgan akkauntga o'yin rad etadi
+        .filter((d) => !ONE_TIME_RE.test(String(d.name || "")))
+        .map((d) => ({ id: d.name, name: d.name, usdt: Number(d.price_usdt) }));
       if (game.allow.length) {
         const order = new Map(game.allow.map((n, i) => [n, i]));
         items = items.filter((x) => order.has(x.name)).sort((a, b) => order.get(a.name) - order.get(b.name));
