@@ -39,6 +39,10 @@ export async function ensureBotRelayTables(pool) {
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     decided_at TIMESTAMPTZ
   )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS bot_relay_blocked (
+    user_id BIGINT PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
 }
 
 function userHeader(from, botName) {
@@ -58,7 +62,12 @@ function ackText(lang) {
  * isBusy(userId) — admin broadcast kabi boshqa jarayonda bo'lsa true (relay aralashmaydi).
  */
 export function registerBotRelay(bot, { pool, botName, isBusy = () => false, adminIds = [] }) {
-  ensureBotRelayTables(pool).catch((e) => console.error("❌ bot relay jadval:", e.message));
+  // Spamchilar: egasi relay xabariga /blok deb reply qilsa, xabarlari egasiga kelmaydi (/ochish — qaytarish)
+  const blocked = new Set();
+  ensureBotRelayTables(pool)
+    .then(() => pool.query("SELECT user_id FROM bot_relay_blocked"))
+    .then((r) => r.rows.forEach((x) => blocked.add(Number(x.user_id))))
+    .catch((e) => console.error("❌ bot relay jadval:", e.message));
 
   const record = (ownerMsgId, userId, direction) =>
     pool
@@ -83,7 +92,8 @@ export function registerBotRelay(bot, { pool, botName, isBusy = () => false, adm
         return;
       }
       const rt = msg.reply_to_message;
-      if (!rt || text.startsWith("/")) return next();
+      const cmd = text.trim().split("@")[0];
+      if (!rt || (text.startsWith("/") && cmd !== "/blok" && cmd !== "/ochish")) return next();
       const r = await pool
         .query("SELECT user_id FROM bot_relay_messages WHERE owner_msg_id = $1 AND direction = 'in' ORDER BY id DESC LIMIT 1", [
           rt.message_id,
@@ -91,6 +101,22 @@ export function registerBotRelay(bot, { pool, botName, isBusy = () => false, adm
         .catch(() => ({ rows: [] }));
       const userId = r.rows[0]?.user_id;
       if (!userId) return next();
+      if (cmd === "/blok" || cmd === "/ochish") {
+        const uid = Number(userId);
+        if (cmd === "/blok") {
+          await pool.query("INSERT INTO bot_relay_blocked (user_id) VALUES ($1) ON CONFLICT DO NOTHING", [uid]).catch(() => {});
+          blocked.add(uid);
+        } else {
+          await pool.query("DELETE FROM bot_relay_blocked WHERE user_id = $1", [uid]).catch(() => {});
+          blocked.delete(uid);
+        }
+        await ctx
+          .reply(cmd === "/blok" ? `🚫 ID ${uid} bloklandi, xabarlari endi kelmaydi (/ochish — qaytarish)` : `✅ ID ${uid} blokdan chiqarildi`, {
+            reply_to_message_id: msg.message_id,
+          })
+          .catch(() => {});
+        return;
+      }
       try {
         await ctx.telegram.copyMessage(Number(userId), ctx.chat.id, msg.message_id);
         record(msg.message_id, userId, "out");
@@ -110,6 +136,7 @@ export function registerBotRelay(bot, { pool, botName, isBusy = () => false, adm
     // Adminlar ham relay qilinadi (masalan @StarsjoySupport mijozdek javob yozsa); broadcast kabi jarayon isBusy orqali o'tadi
     if (text.startsWith("/")) return next();
     if (!RELAY_TYPES.some((t) => msg[t])) return next();
+    if (blocked.has(Number(from.id))) return next();
 
     try {
       const c = await pool.query(
