@@ -122,6 +122,21 @@ function getSubscribeKeyboard() {
 // ===============================
 // CHIROYLI START XABARI
 // ===============================
+// Sayt rejimida (web_handoff) matnda "xarid qiling" yo'q: bot do'kon emas, saytga yo'naltiradi
+function getSiteStartText() {
+  return `
+🇺🇿 StarsJoy xizmatlari saytimizda. *Davom etish uchun START tugmasini bosing.*
+
+🇷🇺 Сервисы StarsJoy работают на нашем сайте. *Нажмите START, чтобы продолжить.*
+
+🇬🇧 StarsJoy services are on our website. *Tap START to continue.*
+`;
+}
+
+async function startTextFor() {
+  return (await webHandoffOn()) ? getSiteStartText() : getStartText();
+}
+
 function getStartText() {
   return `
 🇺🇿 Telegram Stars, Premium va Gift’larni tez va xavfsiz xarid qiling. *Boshlash uchun START tugmasini bosing*
@@ -199,9 +214,11 @@ async function syncMenuButton() {
   try {
     if (mode === 'site') {
       const cmds = await bot.telegram.getMyCommands().catch(() => []);
-      if (!cmds.some((c) => c.command === 'start')) {
-        await bot.telegram.setMyCommands([{ command: 'start', description: "Saytga o'tish" }, ...cmds]);
-      }
+      const need = [
+        { command: 'start', description: "Saytga o'tish" },
+        { command: 'paysupport', description: "To'lov bo'yicha yordam" },
+      ].filter((n) => !cmds.some((c) => c.command === n.command));
+      if (need.length) await bot.telegram.setMyCommands([...cmds, ...need]);
       await bot.telegram.setChatMenuButton({ menuButton: { type: 'commands' } });
     } else {
       await bot.telegram.setChatMenuButton({
@@ -336,7 +353,7 @@ bot.start(async (ctx) => {
   }
 
   // Obuna bo'lgan (yoki majburiy rejim o'chiq) — START
-  await safeReply(ctx, getStartText(), await startKeyboardFor(ctx.from));
+  await safeReply(ctx, await startTextFor(), await startKeyboardFor(ctx.from));
 
   // Kutib turgan qarz eslatmasi (faqat ro'yxatdagi userlar, bir marta)
   maybeSendDebtNotice(pool, bot, userId).catch(() => {});
@@ -353,6 +370,25 @@ bot.start(async (ctx) => {
     await scheduleChannelInvite(pool, userId).catch((err) =>
       console.error("❌ Kanal taklifini rejalashtirishda xato:", err.message)
     );
+  }
+});
+
+
+// ===============================
+// /paysupport — Telegram qoidasi (Bot Developer Terms 6.2.1): to'lov bo'yicha yordam
+// ===============================
+bot.command('paysupport', async (ctx) => {
+  const ru = String(ctx.from?.language_code || '').startsWith('ru');
+  const en = String(ctx.from?.language_code || '').startsWith('en');
+  const text = ru
+    ? "По вопросам оплаты пишите в @StarsjoySupport: пришлите чек и ваш username."
+    : en
+      ? 'For payment questions, message @StarsjoySupport with your receipt and username.'
+      : "To'lov bo'yicha savol yoki muammo bo'lsa, @StarsjoySupport ga yozing: to'lov cheki va username'ingizni yuboring.";
+  try {
+    await ctx.reply(text);
+  } catch (err) {
+    if (err?.response?.error_code !== 403) console.error('❌ /paysupport:', err.message);
   }
 });
 
@@ -383,7 +419,7 @@ bot.action('check_subscription', async (ctx) => {
     await ctx.deleteMessage();
   } catch (e) {}
 
-  await safeReply(ctx, getStartText(), await startKeyboardFor(ctx.from));
+  await safeReply(ctx, await startTextFor(), await startKeyboardFor(ctx.from));
 
   try {
     await ctx.answerCbQuery('✅ Obuna tasdiqlandi!');
