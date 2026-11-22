@@ -21,6 +21,8 @@ let deps = {
   getBot: () => null,
   channel: null,
   validateInitData: null,
+  /** Mini App initData yoki brauzer sessiyasi (modules/webAuth) */
+  resolveUser: null,
   adminIds: [],
 };
 
@@ -70,7 +72,9 @@ export async function subscriptionGate(req, res, next) {
   try {
     if (req.method !== "POST") return next();
     if (!(await isForceSubscriptionOn())) return next();
-    const user = deps.validateInitData?.(req.headers["x-telegram-init-data"]);
+    const user = deps.resolveUser
+      ? await deps.resolveUser(req)
+      : deps.validateInitData?.(req.headers["x-telegram-init-data"]);
     if (!user?.id || isAdminUser(user.id)) return next(); // auth xatosini telegramAuth hal qiladi
     if ((await checkSubscribed(user.id)) === false) {
       return res.status(403).json({

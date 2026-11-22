@@ -41,10 +41,12 @@ import {
 import {
   bootstrapSettings,
   getCachedSettings,
+  loadSettings,
   registerSettingsRoutes,
 } from "./modules/settings/index.js";
 import { upsertUserFromTelegram } from "./modules/users/upsertUser.js";
 import { logIdentity } from "./modules/users/identityLog.js";
+import { createWebAuth } from "./modules/webAuth/index.js";
 import { registerPremiumWait } from "./modules/premiumWait/index.js";
 import { registerBotDraftApi } from "./modules/botRelay/index.js";
 import { registerAiWarning } from "./modules/aiWarning/index.js";
@@ -149,6 +151,8 @@ const ALLOWED_ORIGINS = [
   // Donat sahifasi saytdan chaqiradi (starsjoy.uz/donat)
   'https://starsjoy.uz',
   'https://www.starsjoy.uz',
+  // Brauzer versiyasi (Mini App bilan bir xil ilova, xarid saytda)
+  'https://app.starsjoy.uz',
   'https://web.telegram.org',
   'https://t.me',
   process.env.WEBAPP_URL,
@@ -317,16 +321,18 @@ function validateTelegramInitData(initData) {
     return null;
   }
 }
-// Telegram auth middleware — foydalanuvchi endpointlari uchun
-function telegramAuth(req, res, next) {
+// Telegram auth middleware — foydalanuvchi endpointlari uchun.
+// Mini App: initData; brauzer (app.starsjoy.uz): sessiya cookie (modules/webAuth).
+async function telegramAuth(req, res, next) {
   const initData = req.headers['x-telegram-init-data'];
+  const hasWebSession = (req.headers.cookie || '').includes('sj_web=');
   
   // Development mode da skip qilish mumkin
-  if (process.env.NODE_ENV !== 'production' && !initData) {
+  if (process.env.NODE_ENV !== 'production' && !initData && !hasWebSession) {
     return next();
   }
   
-  const user = validateTelegramInitData(initData);
+  const user = await webAuth.resolveUser(req);
   if (!user) {
     return res.status(401).json({ error: 'Telegram autentifikatsiya muvaffaqiyatsiz' });
   }
@@ -1802,6 +1808,17 @@ const pool = new Pool({
   idleTimeoutMillis: 30000, // Bo'sh connection 30s da yopiladi
   connectionTimeoutMillis: 10000, // Connection olish uchun 10s kutish
   allowExitOnIdle: false, // Idle bo'lganda exit qilmaslik
+});
+
+// Brauzer versiyasi kirishi (Mini App → bir martalik havola → sessiya)
+const webAuth = createWebAuth({
+  pool,
+  validateInitData: validateTelegramInitData,
+  botToken: process.env.BOT_TOKEN,
+  webUrl: process.env.WEB_APP_URL || 'https://app.starsjoy.uz',
+  logIdentity,
+  isHandoffOn: async () => (await loadSettings(pool)).web_handoff,
+  adminIds: (process.env.ADMIN_IDS || '').split(',').map((x) => Number(x.trim())).filter(Boolean),
 });
 
 // Pool error handler
@@ -7488,11 +7505,13 @@ registerPaymeePremiumRoutes(app, paymeePremiumCtx);
 registerRobynhoodAdminRoutes(app, { pool, adminAuth });
 
 registerSettingsRoutes(app, { pool, adminAuth, internalAuth });
+webAuth.register(app, { authLimiter });
 configureForceSubscription({
   pool,
   getBot: () => bot,
   channel: SUBSCRIPTION_CHANNEL,
   validateInitData: validateTelegramInitData,
+  resolveUser: (req) => webAuth.resolveUser(req),
   adminIds: (process.env.ADMIN_IDS || "").split(",").map((x) => Number(x.trim())).filter(Boolean),
 });
 registerSubscriptionRoutes(app, { telegramAuth });

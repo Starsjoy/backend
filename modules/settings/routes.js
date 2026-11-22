@@ -4,6 +4,7 @@ import {
   getPublicAppConfig,
   setMaintenance,
   setDelayNotice,
+  setWebHandoff,
   setForceSubscription,
   setStarsPurchaseMode,
   setFragmentPaymentMethod,
@@ -74,6 +75,21 @@ export function registerSettingsRoutes(app, ctx) {
       res.json({ success: true, ...toPublicAppConfig(settings) });
     } catch (err) {
       console.error("❌ /api/admin/force-subscription:", err.message);
+      res.status(500).json({ error: "Server xatosi" });
+    }
+  });
+
+  app.post("/api/admin/web-handoff", adminAuth, async (req, res) => {
+    try {
+      const { enabled } = req.body;
+      if (typeof enabled !== "boolean") {
+        return res.status(400).json({ error: "enabled (true/false) kerak" });
+      }
+      const settings = await setWebHandoff(pool, enabled);
+      console.log(`🌐 Mini App → sayt o'tkazish: ${enabled ? "YOQILDI" : "O'CHIRILDI"}`);
+      res.json({ success: true, ...toPublicAppConfig(settings) });
+    } catch (err) {
+      console.error("❌ /api/admin/web-handoff:", err.message);
       res.status(500).json({ error: "Server xatosi" });
     }
   });
