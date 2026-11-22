@@ -43,6 +43,27 @@ function pickUser(u) {
   return out;
 }
 
+/** Kirish havolasi uchun ruxsat etilgan ichki yo'l: /stars, /premium/12-oy ... */
+const safePath = (p) => (typeof p === "string" && /^\/[A-Za-z0-9/_-]{0,60}$/.test(p) ? p : "/");
+
+/**
+ * Bir martalik kirish havolasi (Mini App handoff va bot tugmalari uchun umumiy).
+ * user: Telegram user obyekti (id majburiy). Kodning o'zi bazada saqlanmaydi, faqat xeshi.
+ */
+export async function issueLoginLink(pool, user, { path = "/", ttlMinutes = CODE_TTL_MIN, webUrl } = {}) {
+  const u = pickUser(user);
+  if (!u) throw new Error("issueLoginLink: user.id kerak");
+  const code = randomToken();
+  await pool.query(
+    `INSERT INTO web_auth_codes (code_hash, user_id, user_json, expires_at)
+     VALUES ($1, $2, $3, NOW() + ($4 || ' minutes')::interval)`,
+    [sha256(code), u.id, JSON.stringify(u), String(ttlMinutes)]
+  );
+  const base = webUrl || process.env.WEB_APP_URL || "https://app.starsjoy.uz";
+  const next = safePath(path);
+  return `${base}/auth?c=${encodeURIComponent(code)}${next !== "/" ? `&next=${encodeURIComponent(next)}` : ""}`;
+}
+
 export function createWebAuth({ pool, validateInitData, botToken, webUrl, logIdentity, isHandoffOn, adminIds = [] }) {
   const sessionCache = new Map(); // token_hash -> { user, at }
 
@@ -163,15 +184,7 @@ export function createWebAuth({ pool, validateInitData, botToken, webUrl, logIde
           const on = isHandoffOn ? await isHandoffOn() : true;
           if (!on || adminIds.includes(Number(user.id))) return res.json({ ok: true, skip: true });
         }
-        const code = randomToken();
-        await pool.query(
-          `INSERT INTO web_auth_codes (code_hash, user_id, user_json, expires_at)
-           VALUES ($1, $2, $3, NOW() + ($4 || ' minutes')::interval)`,
-          [sha256(code), user.id, JSON.stringify(user), String(CODE_TTL_MIN)]
-        );
-        const rawPath = typeof req.body?.path === "string" ? req.body.path : "/";
-        const path = /^\/[A-Za-z0-9/_-]{0,60}$/.test(rawPath) ? rawPath : "/";
-        const url = `${webUrl}/auth?c=${encodeURIComponent(code)}${path !== "/" ? `&next=${encodeURIComponent(path)}` : ""}`;
+        const url = await issueLoginLink(pool, user, { path: req.body?.path, webUrl });
         res.json({ ok: true, url });
       } catch (e) {
         console.error("❌ /api/web-auth/handoff:", e.message);

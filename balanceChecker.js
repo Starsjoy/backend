@@ -25,6 +25,7 @@ import {
     normalizeCardSlot,
 } from './modules/paymentSystem/index.js';
 import { createCardLimitGuard } from './modules/cardLimit/index.js';
+import { loadSettings } from './modules/settings/index.js';
 import { createSavingsCard, peersFromEnv } from './modules/savingsCard/index.js';
 
 // ======================
@@ -107,6 +108,8 @@ async function initCardLimitGuard(pool) {
         },
         fallbackSlot: () => 'uzcard1',
         normalizeSlot: (s) => (s ? normalizeCardSlot(s) : null),
+        // "Xarid saytda" yoqilgan bo'lsa, xabardagi tugma saytni ochadi (Mini App emas)
+        getWebUrl: async () => ((await loadSettings(pool)).web_handoff ? (process.env.WEB_APP_URL || 'https://app.starsjoy.uz') : null),
     });
     await guard.ensureTables();
     guard.startWorker();

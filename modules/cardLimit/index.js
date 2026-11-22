@@ -84,6 +84,8 @@ export function createCardLimitGuard({
   normalizeSlot = (s) => s,
   hasExpectedCardColumn = false,
   fetchImpl = (...args) => fetch(...args),
+  // Sayt rejimi: tugma Mini App emas, shu manzilni ochadi (null bo'lsa Mini App)
+  getWebUrl = async () => null,
 }) {
   const ownerId = () => String(process.env.CARD_ALERT_USER_ID || DEFAULT_OWNER_ID);
 
@@ -244,11 +246,14 @@ export function createCardLimitGuard({
     }
 
     const webAppUrl = process.env.WEBAPP_URL;
+    const siteUrl = await Promise.resolve(getWebUrl()).catch(() => null);
     const failed = [];
     let delivered = 0;
     for (const user of recipients) {
       const lang = user.language === "ru" ? "ru" : "uz";
-      const markup = webAppUrl ? { inline_keyboard: [[{ text: BUTTON[lang], web_app: { url: webAppUrl } }]] } : undefined;
+      const markup = siteUrl
+        ? { inline_keyboard: [[{ text: BUTTON[lang], url: siteUrl }]] }
+        : webAppUrl ? { inline_keyboard: [[{ text: BUTTON[lang], web_app: { url: webAppUrl } }]] } : undefined;
       const res = await telegram(user.user_id, NOTICE[lang], markup).catch((e) => ({ ok: false, error: e.message }));
       if (res.ok) delivered += 1;
       else failed.push(`${user.username ? `@${user.username}` : user.user_id}: ${res.error}`);

@@ -9,6 +9,8 @@ import { scheduleChannelInvite } from './modules/notifications/channelInvite.js'
 import { notifyReferralStart } from './modules/notifications/referralChannel.js';
 import { maybeSendDebtNotice } from './modules/notifications/debtNotice.js';
 import { handleSourceStart } from './modules/sources/index.js';
+import { loadSettings } from './modules/settings/index.js';
+import { issueLoginLink } from './modules/webAuth/index.js';
 const { Pool } = pg;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -148,6 +150,71 @@ Quyida boshqaruv paneliga o‘tishingiz mumkin:
 // ===============================
 const MINI_APP_URL = "https://vitahealth.uz";
 // Uchala tugma ham Mini App bosh sahifasini ochadi (foydalanuvchi qarori)
+// "Xarid saytda" (web_handoff) yoqilgan bo'lsa: tugmalar Mini App emas, saytni (app.starsjoy.uz) ochadi.
+const WEB_URL = process.env.WEB_APP_URL || 'https://app.starsjoy.uz';
+const BOT_LINK_TTL_MIN = 24 * 60; // bot xabaridagi kirish havolasi: 24 soat, bir martalik
+
+async function webHandoffOn() {
+  try {
+    return Boolean((await loadSettings(pool)).web_handoff);
+  } catch (err) {
+    console.error('❌ web_handoff sozlamasi:', err.message);
+    return false;
+  }
+}
+
+/** Saytga kirish havolasi (mijoz darhol kirgan holda ochiladi). Xato bo'lsa oddiy sayt manzili. */
+async function siteLink(from, path = '/') {
+  try {
+    return await issueLoginLink(pool, from, { path, ttlMinutes: BOT_LINK_TTL_MIN, webUrl: WEB_URL });
+  } catch (err) {
+    console.error('❌ Kirish havolasi:', err.message);
+    return `${WEB_URL}${path === '/' ? '' : path}`;
+  }
+}
+
+/** START klaviaturasi: sozlamaga qarab sayt yoki Mini App */
+async function startKeyboardFor(from) {
+  if (!(await webHandoffOn())) return getStartKeyboard();
+  const [home, premium, stars] = await Promise.all([
+    siteLink(from, '/'),
+    siteLink(from, '/premium'),
+    siteLink(from, '/stars'),
+  ]);
+  return Markup.inlineKeyboard([
+    [Markup.button.url('START', home)],
+    [Markup.button.url('Premium 💎', premium)],
+    [Markup.button.url('Stars ⭐', stars)],
+  ]);
+}
+
+/**
+ * Menyu tugmasi (chat pastidagi chap tugma): sayt rejimida buyruqlar ro'yxati (/start), aks holda Mini App.
+ * Menyu tugmasiga oddiy havola qo'yib bo'lmaydi (Telegram faqat buyruqlar yoki Mini App'ga ruxsat beradi).
+ */
+let lastMenuMode = null;
+async function syncMenuButton() {
+  const mode = (await webHandoffOn()) ? 'site' : 'app';
+  if (mode === lastMenuMode) return;
+  try {
+    if (mode === 'site') {
+      const cmds = await bot.telegram.getMyCommands().catch(() => []);
+      if (!cmds.some((c) => c.command === 'start')) {
+        await bot.telegram.setMyCommands([{ command: 'start', description: "Saytga o'tish" }, ...cmds]);
+      }
+      await bot.telegram.setChatMenuButton({ menuButton: { type: 'commands' } });
+    } else {
+      await bot.telegram.setChatMenuButton({
+        menuButton: { type: 'web_app', text: 'START', web_app: { url: `${MINI_APP_URL}/` } },
+      });
+    }
+    lastMenuMode = mode;
+    console.log(`🔘 Menyu tugmasi: ${mode === 'site' ? "buyruqlar (sayt rejimi)" : 'Mini App'}`);
+  } catch (err) {
+    console.error('❌ Menyu tugmasi:', err.message);
+  }
+}
+
 function getStartKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.webApp("START", `${MINI_APP_URL}/`)],
@@ -227,6 +294,17 @@ bot.start(async (ctx) => {
     console.error("❌ Userni DB ga yozishda xato:", err.message || err);
   }
 
+  // Saytdagi "Telegram orqali kirish" (t.me/StarsjoyBot?start=login): yangi kirish havolasi
+  if (startPayload === 'login') {
+    const link = await siteLink(ctx.from, '/');
+    const ru = String(language).startsWith('ru');
+    return await safeReply(
+      ctx,
+      ru ? 'Нажмите кнопку, чтобы войти на сайт StarsJoy. Ссылка одноразовая.' : "StarsJoy saytiga kirish uchun tugmani bosing. Havola bir martalik.",
+      Markup.inlineKeyboard([[Markup.button.url(ru ? 'Войти на сайт' : 'Saytga kirish', link)]])
+    );
+  }
+
   // ADMIN — obuna talab qilinmaydi
   if (ADMIN_IDS.includes(userId)) {
     return await safeReply(
@@ -258,7 +336,7 @@ bot.start(async (ctx) => {
   }
 
   // Obuna bo'lgan (yoki majburiy rejim o'chiq) — START
-  await safeReply(ctx, getStartText(), getStartKeyboard());
+  await safeReply(ctx, getStartText(), await startKeyboardFor(ctx.from));
 
   // Kutib turgan qarz eslatmasi (faqat ro'yxatdagi userlar, bir marta)
   maybeSendDebtNotice(pool, bot, userId).catch(() => {});
@@ -305,7 +383,7 @@ bot.action('check_subscription', async (ctx) => {
     await ctx.deleteMessage();
   } catch (e) {}
 
-  await safeReply(ctx, getStartText(), getStartKeyboard());
+  await safeReply(ctx, getStartText(), await startKeyboardFor(ctx.from));
 
   try {
     await ctx.answerCbQuery('✅ Obuna tasdiqlandi!');
@@ -650,3 +728,7 @@ function launchBot() {
     });
 }
 launchBot();
+
+// Menyu tugmasini "Xarid saytda" sozlamasiga moslab turish (admin panelda almashtirilsa 1 daqiqada)
+setTimeout(() => syncMenuButton().catch(() => {}), 5000);
+setInterval(() => syncMenuButton().catch(() => {}), 60_000);
