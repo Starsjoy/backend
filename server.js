@@ -153,6 +153,8 @@ const ALLOWED_ORIGINS = [
   'https://www.starsjoy.uz',
   // Brauzer versiyasi (Mini App bilan bir xil ilova, xarid saytda)
   'https://app.starsjoy.uz',
+  // Donat sahifasi (alohida subdomen, ilova build'i)
+  'https://donat.starsjoy.uz',
   'https://web.telegram.org',
   'https://t.me',
   process.env.WEBAPP_URL,
