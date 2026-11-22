@@ -322,8 +322,10 @@ bot.start(async (ctx) => {
   }
 
   // Saytdagi "Telegram orqali kirish" (t.me/StarsjoyBot?start=login): yangi kirish havolasi
-  if (startPayload === 'login') {
-    const link = await siteLink(ctx.from, '/');
+  // login_stars, login_premium ... — kirishdan keyin o'sha sahifaga qaytadi
+  const LOGIN_PAGES = { stars: '/stars', premium: '/premium', gift: '/gift', history: '/history', profile: '/profile', bonus: '/bonus' };
+  if (startPayload === 'login' || /^login_[a-z]+$/.test(startPayload || '')) {
+    const link = await siteLink(ctx.from, LOGIN_PAGES[String(startPayload).slice(6)] || '/');
     const ru = (await botLang(userId)) === 'ru';
     return await safeReply(
       ctx,
