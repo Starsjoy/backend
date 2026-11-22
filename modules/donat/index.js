@@ -818,4 +818,24 @@ export function registerDonatRoutes(app, ctx) {
   });
 
   console.log("✅ Donat moduli: /api/donat/catalog, /check-player, /order, /order/:token, /match; admin /api/admin/donat/*");
+
+  /**
+   * Admin paneldagi umumiy "Yuborish" (masalan AI Warning ro'yxati) donat buyurtmani shu yerga topshiradi.
+   * Buyurtma oldindan status='processing', payment_status='paid' qilib band qilingan bo'lishi kerak.
+   */
+  async function adminDeliver(orderId) {
+    const o = await loadOrder(orderId);
+    if (!o) throw new Error("Donat buyurtma topilmadi");
+    if (o.status === "completed") throw new Error("Allaqachon yetkazilgan");
+    if (!o.provider_order_id || o.provider_status === "failed") {
+      await pool.query(
+        `UPDATE donat_orders SET provider_order_id = NULL, provider_status = NULL, error = NULL, updated_at = NOW() WHERE order_id = $1`,
+        [orderId]
+      );
+    }
+    deliver(orderId).catch((e) => console.error(`❌ Donat #${orderId} admin yuborish:`, e.message));
+    return { itemName: o.item_name, playerId: o.player_id };
+  }
+
+  return { adminDeliver };
 }

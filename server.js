@@ -3339,6 +3339,17 @@ app.post("/api/admin/stars/send/:id", adminAuth, async (req, res) => {
       order = cur;
     }
 
+    // 🎮 Donat buyurtma (masalan AI Warning'dan): Stars emas, donat moduli StarsPaymee orqali yetkazadi
+    if (order.order_type === "donat") {
+      if (!donatApi) return res.status(503).json({ error: "Donat moduli ishga tushmagan" });
+      const info = await donatApi.adminDeliver(id);
+      return res.json({
+        success: true,
+        message: `Donat StarsPaymee'ga yuborildi: ${info.itemName || ""}`.trim(),
+        result: info,
+      });
+    }
+
     if (order.order_type === "stars_usdt") {
       const tx = await sendStarsViaFragment(order, {
         pool,
@@ -7482,7 +7493,7 @@ const paymeePremiumCtx = {
 registerPaymeeStarsRoutes(app, paymeeStarsCtx);
 
 // 🎮 Donat (o'yin valyutasi) — starsjoy.uz/donat
-registerDonatRoutes(app, {
+const donatApi = registerDonatRoutes(app, {
   pool,
   bot,
   adminAuth,
