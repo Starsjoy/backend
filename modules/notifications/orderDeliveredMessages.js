@@ -1,6 +1,7 @@
 import { normalizeLanguage } from "../users/userPreferences.js";
 import {
   MINI_APP_URL,
+  appButtonUrl,
   SUPPORT_HANDLE,
   getUserAppLanguage,
   ensureOrderFlagColumn,
@@ -29,7 +30,7 @@ const TEXTS = {
   },
 };
 
-export function buildDeliveredOrderMessage(order, language) {
+export function buildDeliveredOrderMessage(order, language, startUrl = MINI_APP_URL) {
   const lang = normalizeLanguage(language);
   const tr = TEXTS[lang];
   const recipient = String(order.recipient_username || order.recipient || "").replace(/^@/, "");
@@ -49,7 +50,7 @@ export function buildDeliveredOrderMessage(order, language) {
     text,
     extra: {
       reply_markup: {
-        inline_keyboard: [[{ text: "⭐️ START", url: MINI_APP_URL }]],
+        inline_keyboard: [[{ text: "⭐️ START", url: startUrl }]],
       },
     },
   };
@@ -77,7 +78,7 @@ export async function sendDeliveredOrderNotify(pool, bot, orderId) {
     if (!order) return false;
 
     const lang = await getUserAppLanguage(pool, order.owner_user_id);
-    const { text, extra } = buildDeliveredOrderMessage(order, lang);
+    const { text, extra } = buildDeliveredOrderMessage(order, lang, await appButtonUrl(pool, "/"));
     await bot.telegram.sendMessage(order.owner_user_id, text, extra);
     console.log(
       `📩 Yetkazildi xabari yuborildi: user=${order.owner_user_id}, order=#${order.id}, type=${order.order_type}`

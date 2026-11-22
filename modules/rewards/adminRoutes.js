@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { REWARD_ORDER_PREFIX } from "./config.js";
 import { applyLedgerEntry, deductBalance } from "./db.js";
 import { resolveStuckRedemption } from "./service.js";
-import { MINI_APP_URL, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
+import { appButtonUrl, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
 import { escapeTelegramHtml } from "../usdtStars/fragmentNotify.js";
 
 /** Bitta admin bonusining yuqori chegarasi (tasodifiy ortiqcha raqamdan himoya) */
@@ -53,7 +53,7 @@ export function registerRewardsAdminRoutes(app, { pool, adminAuth, bot, notifyEr
           const tr = GRANT_TEXTS[lang] || GRANT_TEXTS.uz;
           const text = `${tr.title(amount)}\n\n${reason ? `${tr.reason}: ${reason}\n\n` : ""}${tr.body}`;
           await bot.telegram.sendMessage(uid, text, {
-            reply_markup: { inline_keyboard: [[{ text: tr.button, url: MINI_APP_URL }]] },
+            reply_markup: { inline_keyboard: [[{ text: tr.button, url: await appButtonUrl(pool, "/bonus") }]] },
           });
         } catch (err) {
           console.error(`⚠️ Admin bonus xabari yuborilmadi (user=${uid}):`, err.message);

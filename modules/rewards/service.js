@@ -10,7 +10,7 @@ import {
   rewardForOrder,
 } from "./config.js";
 import { applyLedgerEntry } from "./db.js";
-import { MINI_APP_URL, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
+import { appButtonUrl, getUserAppLanguage } from "../notifications/orderExpiredMessages.js";
 import { escapeTelegramHtml } from "../usdtStars/fragmentNotify.js";
 import { notifyReferralPurchase, notifyRedemption } from "../notifications/referralChannel.js";
 import { redeemHistoryText } from "./history.js";
@@ -50,7 +50,7 @@ async function notifyCredit({ pool, bot }, userId, kind, points, friendUsername 
     const tr = CREDIT_TEXTS[lang] || CREDIT_TEXTS.uz;
     const text = kind === "referral" ? tr.friend(points, friendUsername) : tr.buyer(points);
     await bot.telegram.sendMessage(userId, text, {
-      reply_markup: { inline_keyboard: [[{ text: tr.button, url: MINI_APP_URL }]] },
+      reply_markup: { inline_keyboard: [[{ text: tr.button, url: await appButtonUrl(pool, "/bonus") }]] },
     });
   } catch (err) {
     console.error(`⚠️ Bonus xabari yuborilmadi (user=${userId}):`, err.message);

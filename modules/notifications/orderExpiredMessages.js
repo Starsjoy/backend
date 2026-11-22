@@ -1,8 +1,23 @@
 import { normalizeLanguage } from "../users/userPreferences.js";
+import { loadSettings } from "../settings/index.js";
 
 export const SUPPORT_HANDLE = "@StarsjoySupport";
 export const SUPPORT_URL = "https://t.me/StarsjoySupport";
 export const MINI_APP_URL = "https://t.me/StarsjoyBot/starsjoy";
+const WEB_URL = process.env.WEB_APP_URL || "https://app.starsjoy.uz";
+
+/**
+ * Bot xabaridagi "ilovani ochish" tugmasi: "Xarid saytda" (web_handoff) yoqilgan bo'lsa saytni,
+ * aks holda Mini App'ni ochadi. path: sayt ichidagi sahifa (/, /bonus ...).
+ */
+export async function appButtonUrl(pool, path = "/") {
+  try {
+    if ((await loadSettings(pool)).web_handoff) return `${WEB_URL}${path === "/" ? "/" : path}`;
+  } catch {
+    /* sozlama o'qilmasa Mini App */
+  }
+  return MINI_APP_URL;
+}
 
 const TEXTS = {
   uz: {
@@ -97,7 +112,7 @@ export function orderPriceLabel(summ, language) {
   return `${formatSum(summ, lang)} ${TEXTS[lang].currency}`;
 }
 
-export function buildExpiredOrderMessage(order, language) {
+export function buildExpiredOrderMessage(order, language, retryUrl = MINI_APP_URL) {
   const lang = normalizeLanguage(language);
   const tr = TEXTS[lang];
   const text =
@@ -109,7 +124,7 @@ export function buildExpiredOrderMessage(order, language) {
     extra: {
       reply_markup: {
         inline_keyboard: [
-          [{ text: tr.retry, url: MINI_APP_URL }],
+          [{ text: tr.retry, url: retryUrl }],
           [{ text: tr.support, url: SUPPORT_URL }],
         ],
       },
@@ -143,7 +158,7 @@ export async function sendExpiredOrderNotify(pool, bot, orderId) {
 
   try {
     const lang = await getUserAppLanguage(pool, order.owner_user_id);
-    const { text, extra } = buildExpiredOrderMessage(order, lang);
+    const { text, extra } = buildExpiredOrderMessage(order, lang, await appButtonUrl(pool, "/"));
     await bot.telegram.sendMessage(order.owner_user_id, text, extra);
     console.log(
       `📩 Expired order xabari yuborildi: user=${order.owner_user_id}, order=#${order.id}, type=${order.order_type}`
