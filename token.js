@@ -11,6 +11,7 @@ import { maybeSendDebtNotice } from './modules/notifications/debtNotice.js';
 import { handleSourceStart } from './modules/sources/index.js';
 import { loadSettings } from './modules/settings/index.js';
 import { issueLoginLink } from './modules/webAuth/index.js';
+import { getUserAppLanguage } from './modules/notifications/orderExpiredMessages.js';
 const { Pool } = pg;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -169,6 +170,15 @@ const MINI_APP_URL = "https://vitahealth.uz";
 const WEB_URL = process.env.WEB_APP_URL || 'https://app.starsjoy.uz';
 const BOT_LINK_TTL_MIN = 24 * 60; // bot xabaridagi kirish havolasi: 24 soat, bir martalik
 
+/** Bot javobi tili: ilovada tanlangan til (ru yoki uz). Telegram sozlamasi emas, inglizcha yo'q. */
+async function botLang(userId) {
+  try {
+    return (await getUserAppLanguage(pool, userId)) === 'ru' ? 'ru' : 'uz';
+  } catch {
+    return 'uz';
+  }
+}
+
 async function webHandoffOn() {
   try {
     return Boolean((await loadSettings(pool)).web_handoff);
@@ -314,7 +324,7 @@ bot.start(async (ctx) => {
   // Saytdagi "Telegram orqali kirish" (t.me/StarsjoyBot?start=login): yangi kirish havolasi
   if (startPayload === 'login') {
     const link = await siteLink(ctx.from, '/');
-    const ru = String(language).startsWith('ru');
+    const ru = (await botLang(userId)) === 'ru';
     return await safeReply(
       ctx,
       ru ? 'Нажмите кнопку, чтобы войти на сайт StarsJoy. Ссылка одноразовая.' : "StarsJoy saytiga kirish uchun tugmani bosing. Havola bir martalik.",
@@ -378,13 +388,10 @@ bot.start(async (ctx) => {
 // /paysupport — Telegram qoidasi (Bot Developer Terms 6.2.1): to'lov bo'yicha yordam
 // ===============================
 bot.command('paysupport', async (ctx) => {
-  const ru = String(ctx.from?.language_code || '').startsWith('ru');
-  const en = String(ctx.from?.language_code || '').startsWith('en');
+  const ru = (await botLang(ctx.from.id)) === 'ru';
   const text = ru
     ? "По вопросам оплаты пишите в @StarsjoySupport: пришлите чек и ваш username."
-    : en
-      ? 'For payment questions, message @StarsjoySupport with your receipt and username.'
-      : "To'lov bo'yicha savol yoki muammo bo'lsa, @StarsjoySupport ga yozing: to'lov cheki va username'ingizni yuboring.";
+    : "To'lov bo'yicha savol yoki muammo bo'lsa, @StarsjoySupport ga yozing: to'lov cheki va username'ingizni yuboring.";
   try {
     await ctx.reply(text);
   } catch (err) {
