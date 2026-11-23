@@ -10,7 +10,7 @@
  * `name` bilan AYNAN bir xil bo'lishi shart (PUBG: "60 UC" ≠ "60 WOW Coins").
  */
 
-export const DONAT_GAMES = [
+const ALL_GAMES = [
   {
     slug: "pubg-mobile",
     code: "pubgm",
@@ -66,6 +66,8 @@ export const DONAT_GAMES = [
   },
   {
     slug: "standoff-2",
+    // 24.11: o'chirildi — provayder (buypin) har buyurtmani rad etyapti, sotilmaydi
+    disabled: true,
     code: "standoff2_gold",
     kind: "giftcard",
     secretKind: "link", // aktivatsiya havolasi
@@ -133,6 +135,9 @@ export const DONAT_GAMES = [
     allow: [],
   },
 ];
+
+// disabled: true bo'lgan o'yinlar katalogda ko'rinmaydi va buyurtma qabul qilinmaydi
+export const DONAT_GAMES = ALL_GAMES.filter((g) => !g.disabled);
 
 export const GAME_BY_SLUG = new Map(DONAT_GAMES.map((g) => [g.slug, g]));
 
