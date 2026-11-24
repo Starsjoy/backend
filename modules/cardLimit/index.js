@@ -5,9 +5,11 @@
  *  - Limit faqat FAOL kartaga kelganda hisobga olinadi. Eski kartaga kelgani e'tiborsiz:
  *    mijoz yangi karta ko'rsatilgan bo'lsa ham eskisiga to'lashga urinishi mumkin.
  *  - Limit olgan karta 25 soat dam oladi (bank limiti 24 soatda ochiladi, +1 soat zaxira).
- *  - Navbat: aylanma UZCARD'lar (uzcard3 — jamg'arma, qatnashmaydi), ular ham dam olayotgan bo'lsa HUMO.
- *    Hammasi dam olayotgan bo'lsa karta o'zgarmaydi, egasiga bir marta shoshilinch xabar boradi.
- *  - HUMO'ga avtomatika o'tkazgan bo'lsa, UZCARD dami tugashi bilan avtomatik UZCARD'ga qaytadi.
+ *  - Navbat: aylanma UZCARD'lar, ular ham dam olayotgan bo'lsa HUMO (yoqilgan bo'lsa), oxirgi
+ *    zaxira — jamg'arma kartasi uzcard3 (*5830, 25.11 dan). Hammasi dam olayotgan bo'lsa karta
+ *    o'zgarmaydi, egasiga bir marta shoshilinch xabar boradi.
+ *  - HUMO'ga yoki uzcard3'ga avtomatika o'tkazgan bo'lsa, aylanma UZCARD dami tugashi bilan
+ *    avtomatik o'shanga qaytadi (flag `<settingKey>_auto_humo`).
  *  - Almashganda limitdan 10 daqiqa oldindan buyon to'lamaganlarga 2 daqiqadan keyin xabar boradi.
  *
  * Holat bazada: listener alohida jarayon, restartda ham navbat yo'qolmasligi kerak.
@@ -58,9 +60,11 @@ export function decideLimitAction({ last4, cards, humo = null, activeSlot, limit
   const active = all.find((c) => c.slot === activeSlot);
   if (!active || active.last4 !== last4) return { action: "ignore" };
 
+  const savings = cards.find((c) => c.slot === SAVINGS_SLOT && c.slot !== activeSlot);
   const candidates = [
     ...cards.filter((c) => c.slot !== activeSlot && c.slot !== SAVINGS_SLOT),
     ...(humo && humo.slot !== activeSlot ? [humo] : []),
+    ...(savings ? [savings] : []), // oxirgi zaxira: aylanma kartalar ham dam olayotgan bo'lsa
   ];
   if (!candidates.length) return { action: "no_reserve", active };
 
@@ -68,10 +72,15 @@ export function decideLimitAction({ last4, cards, humo = null, activeSlot, limit
   return free ? { action: "switch", active, other: free } : { action: "both_limited", active, other: candidates[0] };
 }
 
-/** HUMO'da turibmiz (avtomatika o'tkazgan): dami tugagan aylanma UZCARD bormi? */
+/** Avtomatika zaxiraga (HUMO yoki uzcard3) o'tkazgan karta */
+export function isFallbackSlot(slot, humo) {
+  return slot === SAVINGS_SLOT || Boolean(humo && slot === humo.slot);
+}
+
+/** Zaxirada turibmiz (avtomatika o'tkazgan): dami tugagan aylanma UZCARD bormi? */
 export function decideReturnFromHumo({ cards, humo, activeSlot, limitedAt, now }) {
-  if (!humo || activeSlot !== humo.slot) return null;
-  return cards.find((c) => c.slot !== SAVINGS_SLOT && !isResting(c.last4, limitedAt, now)) || null;
+  if (!isFallbackSlot(activeSlot, humo)) return null;
+  return cards.find((c) => c.slot !== SAVINGS_SLOT && c.slot !== activeSlot && !isResting(c.last4, limitedAt, now)) || null;
 }
 
 export function createCardLimitGuard({
@@ -165,11 +174,11 @@ export function createCardLimitGuard({
            VALUES ($1, $2, $3, NOW() + ($4 * INTERVAL '1 millisecond'))`,
           [decision.active.last4, decision.other.last4, parsed.smsAt, NOTIFY_DELAY_MS]
         );
-        // HUMO'ga avtomatika o'tkazdi — UZCARD bo'shaganda o'zi qaytaradi
+        // Zaxiraga (HUMO yoki uzcard3) avtomatika o'tkazdi — aylanma UZCARD bo'shaganda o'zi qaytaradi
         await client.query(
           `INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW())
            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-          [`${settingKey}_auto_humo`, humo && decision.other.slot === humo.slot ? "1" : "0"]
+          [`${settingKey}_auto_humo`, isFallbackSlot(decision.other.slot, humo) ? "1" : "0"]
         );
       } else {
         const alreadyAlerted = !isNewLimit && own?.alerted_at;
@@ -284,12 +293,12 @@ export function createCardLimitGuard({
     }
   }
 
-  /** Avtomatika HUMO'ga o'tkazgan bo'lsa: UZCARD dami tugashi bilan qaytaradi (+ mijozlarga xabar navbati) */
+  /** Avtomatika zaxiraga (HUMO/uzcard3) o'tkazgan bo'lsa: aylanma UZCARD dami tugashi bilan qaytaradi (+ mijozlarga xabar navbati) */
   async function maybeReturnFromHumo(now = new Date()) {
     const humo = getHumo();
-    if (!humo) return null;
     const client = await pool.connect();
     let back = null;
+    let from = null;
     try {
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock($1)", [ADVISORY_LOCK_KEY]);
@@ -300,12 +309,19 @@ export function createCardLimitGuard({
       }
       const setting = await client.query("SELECT value FROM settings WHERE key = $1", [settingKey]);
       const activeSlot = normalizeSlot(setting.rows[0]?.value) || fallbackSlot();
-      if (activeSlot !== humo.slot) {
-        // Admin qo'lda boshqa kartaga o'tkazgan — avtomatika endi aralashmaydi
+      // StarsJoy jamg'arma rejimi uzcard3'ni o'zi boshqarsa (faollashgan) — qaytarishni unga qoldiramiz
+      // (UzGets'da savings_state jadvali yo'q: tranzaksiya buzilmasin deb avval borligini tekshiramiz)
+      const hasSavings = activeSlot === SAVINGS_SLOT &&
+        (await client.query("SELECT to_regclass('public.savings_state') IS NOT NULL AS ok")).rows[0].ok;
+      const savingsActive = hasSavings &&
+        (await client.query("SELECT active FROM savings_state WHERE id = 1")).rows[0]?.active === true;
+      if (!isFallbackSlot(activeSlot, humo) || savingsActive) {
+        // Admin qo'lda boshqa kartaga o'tkazgan (yoki jamg'arma egallagan) — avtomatika endi aralashmaydi
         await client.query("UPDATE settings SET value = '0', updated_at = NOW() WHERE key = $1", [`${settingKey}_auto_humo`]);
         await client.query("COMMIT");
         return null;
       }
+      from = [...listUzcards(), ...(humo ? [humo] : [])].find((c) => c.slot === activeSlot) || null;
       const state = await client.query("SELECT card_last4, limited_at FROM card_limit_state");
       const limitedAt = Object.fromEntries(state.rows.map((r) => [r.card_last4, new Date(r.limited_at)]));
       back = decideReturnFromHumo({ cards: listUzcards(), humo, activeSlot, limitedAt, now });
@@ -319,7 +335,7 @@ export function createCardLimitGuard({
         await client.query(
           `INSERT INTO card_switch_notices (from_last4, to_last4, limit_at, notify_after)
            VALUES ($1, $2, NOW(), NOW() + ($3 * INTERVAL '1 millisecond'))`,
-          [humo.last4, back.last4, NOTIFY_DELAY_MS]
+          [from?.last4 || "????", back.last4, NOTIFY_DELAY_MS]
         );
       }
       await client.query("COMMIT");
@@ -329,7 +345,7 @@ export function createCardLimitGuard({
     } finally {
       client.release();
     }
-    if (back) console.log(`💳 HUMO ***${humo.last4} → UZCARD ***${back.last4} (dam tugadi)`);
+    if (back) console.log(`💳 Zaxira ***${from?.last4} → UZCARD ***${back.last4} (dam tugadi)`);
     return back;
   }
 
